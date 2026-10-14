@@ -6,7 +6,7 @@ Specs per tab live in docs/specs/. Read only the spec for the tab being worked o
 ## Stack
 - Backend: Python 3.12, FastAPI, managed with uv. Run: `cd backend && uv run uvicorn app.main:app --reload --port 8100`
 - Frontend: React + Vite + TypeScript + Tailwind. Run: `cd frontend && npm run dev` (port 5173)
-- LLM: local Ollama at http://localhost:11434, model gpt-oss:120b
+- LLM: local Ollama at http://localhost:11434, model gpt-oss:20b
 - Grammar: LanguageTool at http://localhost:8120 (Docker)
 - Tests: pytest (backend), run `cd backend && uv run pytest`
 
