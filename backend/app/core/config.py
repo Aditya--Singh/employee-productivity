@@ -1,0 +1,27 @@
+"""Application settings, read from environment variables with local defaults."""
+
+import os
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Settings:
+    ollama_url: str = "http://localhost:11434"
+    ollama_model: str = "gpt-oss:20b"
+    languagetool_url: str = "http://localhost:8120"
+    max_upload_mb: int = 20
+    frontend_origin: str = "http://localhost:5173"
+
+    @property
+    def max_upload_bytes(self) -> int:
+        return self.max_upload_mb * 1024 * 1024
+
+
+def get_settings() -> Settings:
+    return Settings(
+        ollama_url=os.getenv("OLLAMA_URL", Settings.ollama_url),
+        ollama_model=os.getenv("OLLAMA_MODEL", Settings.ollama_model),
+        languagetool_url=os.getenv("LANGUAGETOOL_URL", Settings.languagetool_url),
+        max_upload_mb=int(os.getenv("MAX_UPLOAD_MB", Settings.max_upload_mb)),
+        frontend_origin=os.getenv("FRONTEND_ORIGIN", Settings.frontend_origin),
+    )
