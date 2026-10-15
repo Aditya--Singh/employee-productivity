@@ -110,3 +110,63 @@ def make_pdf(pages: list[str | None]) -> bytes:
         f"startxref\n{xref}\n%%EOF\n"
     ).encode()
     return bytes(out)
+
+
+def make_rich_docx() -> bytes:
+    """A DOCX with the features spec 5.1 says must survive edits.
+
+    Paragraphs, in order:
+      0 "KYC Update" (Heading 1)
+      1 "The branch " + bold "manger" + " will review it."
+      2 bold "Please acc" + "omodate the request."
+      3 "Visit " + link "our websit" + " today."
+      4-7 table cells: "Account", "Amount", "Savings", "1,000"
+      8 italic "Unchanged closing paragraph."
+      9 "First item" (List Number)
+    """
+    from docx import Document
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Inches
+
+    doc = Document()
+    section = doc.sections[0]
+    section.left_margin = Inches(1.25)
+    section.header.paragraphs[0].text = "Punjab National Bank - Letterhead"
+    section.footer.paragraphs[0].text = "Confidential"
+
+    doc.add_heading("KYC Update", level=1)
+
+    p = doc.add_paragraph("The branch ")
+    p.add_run("manger").bold = True
+    p.add_run(" will review it.")
+
+    p = doc.add_paragraph()
+    p.add_run("Please acc").bold = True
+    p.add_run("omodate the request.")
+
+    p = doc.add_paragraph("Visit ")
+    r_id = p.part.relate_to("https://example.invalid/", RT.HYPERLINK, is_external=True)
+    link = OxmlElement("w:hyperlink")
+    link.set(qn("r:id"), r_id)
+    run = OxmlElement("w:r")
+    t = OxmlElement("w:t")
+    t.text = "our websit"
+    run.append(t)
+    link.append(run)
+    p._p.append(link)
+    p.add_run(" today.")
+
+    table = doc.add_table(rows=2, cols=2)
+    table.style = "Table Grid"
+    for r, row in enumerate([["Account", "Amount"], ["Savings", "1,000"]]):
+        for c, value in enumerate(row):
+            table.cell(r, c).text = value
+
+    doc.add_paragraph().add_run("Unchanged closing paragraph.").italic = True
+    doc.add_paragraph("First item", style="List Number")
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()

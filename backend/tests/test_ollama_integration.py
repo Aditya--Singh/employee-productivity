@@ -50,3 +50,34 @@ def test_twenty_page_document_is_not_truncated():
     assert first_code in reply
     assert last_code in reply
     assert data["prompt_eval_count"] >= words
+
+
+def test_rewrite_keeps_paragraphs_and_numbers():
+    """Phase 3: the real model rewrites a section without merging paragraphs or adding
+    numbers. The rewrite's own validation retries once; the result must pass it."""
+    from app.tabs.document_assistant import segments
+    from app.tabs.document_assistant.rewrite import (
+        new_numbers,
+        rewrite_document,
+    )
+
+    source = (
+        "we got ur loan application for Rs 5,00,000 on 12 March 2026.\n\n"
+        "pls send the KYC docs to the branch within 15 days or the file will be closed.\n\n"
+        "call the branch on 0294-2410000 if u have questions."
+    )
+    doc = segments.from_text(source)
+
+    async def collect():
+        client = OllamaClient(timeout=900.0)
+        return [e async for e in rewrite_document(doc, "formal", client)]
+
+    events = asyncio.run(collect())
+    ends = [e for e in events if e["type"] == "section_end"]
+    notices = [e["text"] for e in events if e["type"] == "notice"]
+    out = [t for e in ends for t in e["texts"]]
+    print(f"\nrewrite={out!r} notices={notices!r}")
+    assert not notices, "the model's rewrite failed validation twice"
+    assert len(out) == 3
+    assert out != [s.text for s in doc.segments]
+    assert new_numbers(source, "\n\n".join(out)) == set()

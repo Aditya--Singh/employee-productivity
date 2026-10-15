@@ -1,16 +1,16 @@
 export type Mode = "proofread" | "rewrite" | "summarize" | "draft" | "data";
 
 export const MODES: { id: Mode; label: string; ready: boolean }[] = [
-  { id: "proofread", label: "Proofread", ready: false },
-  { id: "rewrite", label: "Rewrite", ready: false },
+  { id: "proofread", label: "Proofread", ready: true },
+  { id: "rewrite", label: "Rewrite", ready: true },
   { id: "summarize", label: "Summarize", ready: true },
   { id: "draft", label: "Draft", ready: false },
   { id: "data", label: "Ask about data", ready: false },
 ];
 
-type Props = { active: Mode; onSelect: (mode: Mode) => void };
+type Props = { active: Mode; onSelect: (mode: Mode) => void; disabled?: boolean };
 
-export default function ModeSelector({ active, onSelect }: Props) {
+export default function ModeSelector({ active, onSelect, disabled = false }: Props) {
   return (
     <div role="radiogroup" aria-label="Mode" className="flex flex-wrap gap-2">
       {MODES.map((m) => {
@@ -21,7 +21,7 @@ export default function ModeSelector({ active, onSelect }: Props) {
             type="button"
             role="radio"
             aria-checked={selected}
-            disabled={!m.ready}
+            disabled={!m.ready || (disabled && !selected)}
             onClick={() => onSelect(m.id)}
             className={`rounded-full border px-4 py-2 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pnb-gold ${
               selected

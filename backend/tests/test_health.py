@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app import main
+from app.core.languagetool import LanguageToolClient
 from app.core.ollama import OllamaClient, OllamaError
 
 client = TestClient(main.app)
@@ -12,11 +13,11 @@ def _patch(monkeypatch, models=None, lt=True):
             raise OllamaError("down")
         return models
 
-    async def fake_lt(url):
+    async def fake_lt(self, timeout=3.0):
         return lt
 
     monkeypatch.setattr(OllamaClient, "list_models", fake_list)
-    monkeypatch.setattr(main, "_languagetool_reachable", fake_lt)
+    monkeypatch.setattr(LanguageToolClient, "is_available", fake_lt)
 
 
 def test_health_all_up(monkeypatch):

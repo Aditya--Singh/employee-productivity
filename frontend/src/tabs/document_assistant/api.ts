@@ -19,11 +19,43 @@ export type ExtractResult = {
   sheets?: SheetPreview[];
 };
 
+export type Suggestion = {
+  id: string;
+  start: number;
+  end: number;
+  category: string;
+  message: string;
+  replacements: string[];
+  source: "languagetool" | "llm";
+  applicable: boolean;
+};
+
+export type SourceParagraph = { text: string; editable: boolean; reason: string };
+
 export type StreamEvent =
   | { type: "status"; text: string }
-  | { type: "chunk"; text: string }
+  | { type: "chunk"; text: string; index?: number }
   | { type: "done" }
-  | { type: "error"; code: string; message: string };
+  | { type: "error"; code: string; message: string }
+  | { type: "notice"; text: string }
+  // Rewrite
+  | { type: "source"; paragraphs: SourceParagraph[] }
+  | { type: "section_start"; index: number; paragraphs: number[] }
+  | { type: "section_end"; index: number; paragraphs: number[]; texts: string[] }
+  // Proofread
+  | { type: "result"; text: string; suggestions: Suggestion[]; notices: string[] };
+
+export type Source = { text: string } | { file_id: string };
+
+/** A file ready to download, with warnings about formatting it may have lost. */
+export type FileResult = { file_id: string; filename: string; warnings: string[] };
+
+export type AppliedResult = {
+  text: string;
+  warnings: string[];
+  file_id?: string;
+  filename?: string;
+};
 
 /** An error with a plain-English message safe to show to users. */
 export class ApiError extends Error {
@@ -68,19 +100,62 @@ export async function deleteFile(fileId: string): Promise<void> {
   }
 }
 
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  let resp: Response;
+  try {
+    resp = await fetch(`${BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new ApiError(SERVER_DOWN, 0);
+  }
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export function proofreadApply(
+  source: Source,
+  accepted: { start: number; end: number; replacement: string }[],
+): Promise<AppliedResult> {
+  return postJson("/proofread/apply", { ...source, accepted });
+}
+
+export function exportResult(body: {
+  text: string;
+  format: "txt" | "docx";
+  source_file_id?: string;
+}): Promise<FileResult> {
+  return postJson("/export", body);
+}
+
+export function downloadUrl(fileId: string): string {
+  return `${BASE}/download/${encodeURIComponent(fileId)}`;
+}
+
+export function streamSummary(
+  body: Source,
+  onEvent: (event: StreamEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  return streamEvents("/summarize", body, onEvent, signal);
+}
+
 /**
- * POST a summary request and call `onEvent` for each server-sent event.
+ * POST a request and call `onEvent` for each server-sent event.
  * EventSource cannot send a POST body, so the stream is read with fetch.
  * Aborting `signal` stops the stream and, on the server, the model.
  */
-export async function streamSummary(
-  body: { text: string } | { file_id: string },
+export async function streamEvents(
+  path: "/summarize" | "/rewrite" | "/proofread",
+  body: object,
   onEvent: (event: StreamEvent) => void,
   signal: AbortSignal,
 ): Promise<void> {
   let resp: Response;
   try {
-    resp = await fetch(`${BASE}/summarize`, {
+    resp = await fetch(`${BASE}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

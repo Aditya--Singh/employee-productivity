@@ -4,11 +4,11 @@ import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 
-import httpx
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
+from app.core.languagetool import LanguageToolClient
 from app.core.ollama import OllamaClient, OllamaError
 from app.tabs.document_assistant.file_store import run_cleanup_loop
 from app.tabs.document_assistant.router import router as document_assistant_router
@@ -35,17 +35,7 @@ app.add_middleware(
 )
 
 
-async def _languagetool_reachable(url: str) -> bool:
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(f"{url.rstrip('/')}/v2/languages")
-            return resp.status_code == 200
-    except httpx.HTTPError:
-        return False
-
-
 async def health() -> dict:
-    settings = get_settings()
     ollama = OllamaClient()
     try:
         models = await ollama.list_models(timeout=3.0)
@@ -59,9 +49,7 @@ async def health() -> dict:
             "model": ollama.model,
             "model_available": ollama.model in models,
         },
-        "languagetool": {
-            "reachable": await _languagetool_reachable(settings.languagetool_url)
-        },
+        "languagetool": {"reachable": await LanguageToolClient().is_available()},
     }
 
 

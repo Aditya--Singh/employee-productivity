@@ -134,6 +134,11 @@ does not fit. Every request must therefore set `num_ctx` explicitly.
   it raises an error instead of letting Ollama truncate. The tab turns this into the
   "document too long" message.
 - **Chunking:** Summarize chunks are sized so each chunk request also stays inside `num_ctx`.
+- **Rewrite sections:** Rewrite does not send the whole document at once. It rewrites a few
+  paragraphs at a time (at most 4 paragraphs or about 4,000 characters per request), and the
+  model must return the same number of paragraphs. Each request is small, `num_ctx` stays at
+  32768, and every rewritten paragraph maps to one source paragraph for DOCX in-place edits.
+  Proofread's clarity check uses the same sections.
 
 Required tests:
 - **Unit, mocked:** every chat request, streaming and non-streaming, carries `num_ctx`.
