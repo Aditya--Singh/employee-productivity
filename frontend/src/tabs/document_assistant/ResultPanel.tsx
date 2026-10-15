@@ -1,4 +1,5 @@
 import { useState } from "react";
+import Markdown, { toPlainText } from "./Markdown";
 
 export type ResultState = {
   status: "idle" | "streaming" | "done" | "stopped" | "error";
@@ -14,7 +15,7 @@ export default function ResultPanel({ result, onStop }: Props) {
 
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(result.text);
+      await navigator.clipboard.writeText(toPlainText(result.text));
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -63,7 +64,7 @@ export default function ResultPanel({ result, onStop }: Props) {
             {result.progress ?? "Thinking…"}
           </p>
         )}
-        {result.text && <div className="whitespace-pre-wrap">{result.text}</div>}
+        {result.text && <Markdown text={result.text} />}
         {streaming && result.text && (
           <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-pnb-gold align-middle" />
         )}

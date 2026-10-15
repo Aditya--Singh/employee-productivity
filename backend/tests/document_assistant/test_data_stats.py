@@ -145,9 +145,52 @@ def test_unique_integer_column_is_identifier_whatever_its_name():
     assert c.total is None
 
 
-def test_unique_integers_written_as_text_are_identifiers():
-    s = pd.Series(["5,01,234", "5,01,235", "5,01,236"])
-    assert column_stats("Ref", s).kind == "identifier"
+def test_values_with_thousands_separators_are_never_identifiers():
+    indian = pd.Series(["4,50,00,000", "7,80,00,000", "12,40,00,000"])
+    western = pd.Series(["45,000,000", "78,000,000", "124,000,000"])
+    for s in (indian, western):
+        c = column_stats("Figures", s)
+        assert c.kind == "number"
+        assert c.total == 247_000_000
+
+
+def test_unique_codes_with_leading_zero_are_identifiers():
+    c = column_stats("Ref", pd.Series(["0123", "0456", "1011"]))
+    assert c.kind == "identifier"
+    assert c.total is None
+
+
+def test_unique_same_length_six_digit_codes_are_identifiers():
+    assert column_stats("Ref", pd.Series(["313001", "302001", "110075"])).kind == "identifier"
+    assert column_stats("Ref", pd.Series([100245678901, 100245678902])).kind == "identifier"
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [12500, 25000, 37500],  # unique but only five digits
+        [125000, 1250000, 75000],  # unique but different lengths
+        [450000.5, 780000.25, 990000.75],  # decimals
+        ["0123", "0123", "0456"],  # leading zero but not unique
+    ],
+)
+def test_unique_rule_needs_code_shape(values):
+    assert column_stats("Ref", pd.Series(values)).kind == "number"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "CASA Deposits", "Advances", "Loan", "Credit", "Debit", "Income", "Expenses",
+        "Cost", "Fees", "Interest", "Limit", "Value", "Profit", "NPA", "Premium",
+        "Sanctioned", "Outstanding", "Disbursed",
+    ],
+)
+def test_money_names_are_never_read_as_codes(name):
+    # Same-length six-digit unique values would otherwise look like codes.
+    c = column_stats(name, pd.Series([450000, 780000, 125000]))
+    assert c.kind == "number"
+    assert c.total == 1_355_000
 
 
 def test_unique_whole_amounts_are_numbers_when_named_as_amounts():

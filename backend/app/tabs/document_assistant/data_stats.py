@@ -5,10 +5,11 @@ Before computing anything:
   "(5,000)" for negatives) are converted to numbers.
 - Identifier columns (account numbers, codes, phone numbers and so on) are never summed or
   averaged; only their count and distinct count are reported. A column is an identifier if
-  its name says so, or if its values are all unique integers. The uniqueness rule is not
-  applied to columns that are clearly amounts (an amount-like name, or values written with
-  a currency sign, decimals or a minus sign), because a short list of whole-rupee amounts
-  is often unique too.
+  its name says so, or if its values look like codes: plain digits with no separators, all
+  unique, and either some have a leading zero ("0123") or all have the same length of six
+  or more digits. Values written with thousands separators ("4,50,00,000" or
+  "450,000,000"), and columns with a money word in their name, are never treated as codes
+  by their values alone.
 - Date columns report their earliest and latest date.
 """
 
@@ -22,21 +23,22 @@ import pandas as pd
 ID_NAME_TOKENS = frozenset(
     {"id", "no", "number", "account", "code", "pin", "phone", "mobile"}
 )
-# Names that mark a column as an amount or quantity, so unique values do not make it an id.
+# Names that mark a column as an amount or quantity, so its values are never read as codes.
+# Matched against singular word forms, so "Deposits" matches "deposit".
 AMOUNT_NAME_TOKENS = frozenset(
     {
         "amount", "amt", "balance", "bal", "total", "value", "price", "cost", "salary",
-        "income", "sum", "rate", "limit", "fee", "fees", "charge", "charges", "interest",
-        "principal", "emi", "outstanding", "deposit", "withdrawal", "credit", "debit",
-        "qty", "quantity", "count", "rs", "inr", "rupees", "lakh", "lakhs", "crore",
-        "crores",
+        "income", "expense", "sum", "rate", "limit", "fee", "charge", "interest",
+        "principal", "emi", "outstanding", "deposit", "advance", "loan", "withdrawal",
+        "credit", "debit", "profit", "npa", "premium", "sanctioned", "disbursed",
+        "qty", "quantity", "count", "rs", "inr", "rupee", "lakh", "crore",
     }
 )
+MIN_CODE_LENGTH = 6
 TOP_VALUES = 5
 MAX_CATEGORIES_FOR_TOP = 50
 
 _CURRENCY_RE = re.compile(r"₹|\bINR\b|\bRs\b\.?", re.IGNORECASE)
-_AMOUNT_MARK_RE = re.compile(r"₹|\bINR\b|\bRs\b|[().-]", re.IGNORECASE)
 _NUMBER_RE = re.compile(r"^-?\d+(?:,\d+)*(?:\.\d+)?$")
 _NAME_TOKEN_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
 
@@ -102,25 +104,50 @@ def is_id_name(name: str) -> bool:
     return any(t in ID_NAME_TOKENS for t in name_tokens(name))
 
 
+def _singular(token: str) -> str:
+    return token[:-1] if len(token) > 3 and token.endswith("s") else token
+
+
 def is_amount_name(name: str) -> bool:
-    return any(t in AMOUNT_NAME_TOKENS for t in name_tokens(name))
+    return any(_singular(t) in AMOUNT_NAME_TOKENS for t in name_tokens(name))
 
 
-def _written_as_amount(values: pd.Series) -> bool:
-    """True if any text value has a currency sign, brackets, a decimal point or a minus."""
-    return any(isinstance(v, str) and _AMOUNT_MARK_RE.search(v) for v in values)
+def _plain_digits(value: Any) -> str | None:
+    """The value as a string of digits, or None if it has anything else (",", ".", "₹"...)."""
+    if hasattr(value, "item"):  # numpy scalar
+        value = value.item()
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        text = str(value)
+    elif isinstance(value, float):
+        if not value.is_integer():
+            return None
+        text = str(int(value))
+    elif isinstance(value, str):
+        text = value.strip()
+    else:
+        return None
+    return text if text.isascii() and text.isdigit() else None
 
 
-def _is_unique_integers(series: pd.Series) -> bool:
-    values = series.dropna()
-    if len(values) < 2 or not pd.api.types.is_numeric_dtype(values):
+def looks_like_codes(values: pd.Series) -> bool:
+    """True if the values read as codes rather than quantities.
+
+    Plain digits only (no thousands separators, decimals, signs or currency), all unique,
+    and either at least one has a leading zero or all share one length of 6+ digits.
+    """
+    if len(values) < 2 or not values.is_unique:
         return False
-    if pd.api.types.is_bool_dtype(values):
+    digits = [_plain_digits(v) for v in values]
+    if any(d is None for d in digits):
         return False
-    as_float = values.astype("float64")
-    if (as_float < 0).any():
+    if len(set(digits)) != len(digits):
         return False
-    return bool((as_float == as_float.round()).all()) and values.is_unique
+    if any(len(d) > 1 and d.startswith("0") for d in digits):
+        return True
+    lengths = {len(d) for d in digits}
+    return len(lengths) == 1 and lengths.pop() >= MIN_CODE_LENGTH
 
 
 def _parse_dates(series: pd.Series) -> pd.Series | None:
@@ -198,8 +225,7 @@ def column_stats(name: str, series: pd.Series) -> ColumnStats:
             numeric = converted
 
     if numeric is not None:
-        looks_like_amount = is_amount_name(name) or _written_as_amount(values)
-        if not looks_like_amount and _is_unique_integers(numeric):
+        if not is_amount_name(name) and looks_like_codes(values):
             return ColumnStats(kind="identifier", **base)
         return ColumnStats(
             kind="number",
