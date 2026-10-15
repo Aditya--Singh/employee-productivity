@@ -56,10 +56,15 @@ DOCX_SPAN_WARNINGS = [
 ]
 DOCX_REWRITE_WARNINGS = [
     (
-        "Rewritten paragraphs keep their paragraph style, but bold, italic or coloured "
-        "words inside them take the formatting of the paragraph's first word."
+        "Rewritten paragraphs keep their paragraph style and main formatting. Bold, "
+        "italic or underlined phrases keep their formatting only where they appear "
+        "unchanged; other character formatting inside them (colours, highlights, mixed "
+        "fonts) is lost."
     ),
-    "Tables and paragraphs with links, fields or images were not rewritten.",
+    (
+        "Tables, paragraphs with links, fields or images, and letter formalities "
+        "(salutation, closing, reference, address, subject, signature) were not rewritten."
+    ),
 ]
 NEW_DOCX_WARNINGS = [
     (
@@ -353,7 +358,8 @@ async def export(req: ExportRequest, store: FileStore = Depends(get_store)) -> d
             for i, (new, old) in enumerate(zip(paragraphs, doc.segments))
             if not same_words(new, old.text)
         }
-        locked = [i for i in changed if not doc.segments[i].rewritable]
+        # The user may edit formalities by hand; only tables and links cannot be saved.
+        locked = [i for i in changed if not doc.segments[i].replaceable]
         data = replace_paragraphs(
             original, {i: t for i, t in changed.items() if i not in locked}
         )

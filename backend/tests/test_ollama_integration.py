@@ -81,3 +81,47 @@ def test_rewrite_keeps_paragraphs_and_numbers():
     assert len(out) == 3
     assert out != [s.text for s in doc.segments]
     assert new_numbers(source, "\n\n".join(out)) == set()
+
+
+def test_proofread_letter_flags_planted_errors_and_no_bank_terms():
+    """Regression test on samples/test_proofread_letter.docx with real Ollama and real
+    LanguageTool: all nine planted errors are flagged and no bank term is touched."""
+    from app.core.languagetool import LanguageToolClient
+    from app.tabs.document_assistant import segments
+    from app.tabs.document_assistant.bank_terms import BankTerms
+    from app.tabs.document_assistant.proofread import proofread_document
+    from tests.document_assistant.test_proofread import LETTER, flagged, planted_spans
+
+    lt = LanguageToolClient()
+    if not asyncio.run(lt.is_available()):
+        pytest.fail("LanguageTool is not running at the configured URL")
+    doc = segments.from_docx(LETTER.read_bytes())
+
+    async def collect():
+        client = OllamaClient(timeout=900.0)
+        return [e async for e in proofread_document(doc, client, lt)]
+
+    result = asyncio.run(collect())[-1]
+    assert result["type"] == "result", result
+    text, suggestions = result["text"], result["suggestions"]
+    print(
+        "\n"
+        + "\n".join(
+            f"{s['source']:12} {s['category']:11} {text[s['start'] : s['end']]!r} -> "
+            f"{s['replacements'][:2]}"
+            for s in suggestions
+        )
+    )
+    assert result["notices"] == []
+    missed = [
+        error
+        for error, (start, end) in planted_spans(text).items()
+        if not flagged(text, suggestions, start, end)
+    ]
+    assert missed == []
+    touched = [
+        term
+        for start, end, term in BankTerms.load().spans(text)
+        if flagged(text, suggestions, start, end)
+    ]
+    assert touched == []

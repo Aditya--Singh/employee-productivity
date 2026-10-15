@@ -1,9 +1,11 @@
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
 from app.tabs.document_assistant import segments
+from app.tabs.document_assistant.bank_terms import BankTerms
 from app.tabs.document_assistant.proofread import (
     ISSUES_SCHEMA,
     LLM_DOWN_NOTICE,
@@ -132,7 +134,12 @@ def test_invalid_json_twice_gives_notice_and_keeps_languagetool():
 def test_parse_issues_accepts_wrapped_json_and_skips_bad_items():
     reply = 'Here you go: {"issues": [{"original": "a", "replacement": "b"}, 5]}'
     assert parse_issues(reply) == [
-        {"original": "a", "replacement": "b", "explanation": "Clearer wording."}
+        {
+            "original": "a",
+            "replacement": "b",
+            "category": "clarity",
+            "explanation": "Clearer wording.",
+        }
     ]
     with pytest.raises(ValueError):
         parse_issues('{"problems": []}')
@@ -169,7 +176,9 @@ def test_long_document_is_checked_in_sections():
     assert len(fake.requests) > 10
     statuses = [e["text"] for e in events if e["type"] == "status"]
     assert statuses[0] == "Checking spelling and grammar…"
-    assert statuses[-1].startswith(f"Checking clarity, part {len(fake.requests)} of")
+    assert statuses[-1].startswith(
+        f"Checking grammar and clarity, part {len(fake.requests)} of"
+    )
 
 
 def test_over_length_document_rejected():
@@ -199,3 +208,113 @@ def test_apply_to_text():
         apply_to_text(text, [(0, 5, "a"), (3, 8, "b")])
     with pytest.raises(ValueError):
         apply_to_text(text, [(0, 99, "a")])
+
+
+# ------------------------------------------------- bank terms and agreement (sample letter)
+
+LETTER = Path(__file__).resolve().parents[3] / "samples" / "test_proofread_letter.docx"
+
+# The nine planted errors: (text to find in the letter, text the suggestion must overlap).
+PLANTED = [
+    ("recieved", "recieved"),
+    ("are below", "are below"),
+    ("borrowers has", "borrowers has"),
+    ("personaly", "personaly"),
+    ("lower then", "lower then"),
+    ("atleast", "atleast"),
+    ("policy ,", " ,"),
+    ("Bellow", "Bellow"),
+    ("acounts", "acounts"),
+]
+
+
+def planted_spans(text: str) -> dict[str, tuple[int, int]]:
+    spans = {}
+    for context, error in PLANTED:
+        start = text.index(context) + context.index(error)
+        spans[error] = (start, start + len(error))
+    return spans
+
+
+def flagged(text: str, suggestions: list[dict], start: int, end: int) -> bool:
+    return any(
+        s["start"] < end and start < max(s["end"], s["start"] + 1) for s in suggestions
+    )
+
+
+def test_letter_bank_terms_are_never_flagged_mocked():
+    """LanguageTool and the model both 'flag' bank terms; none of those reach the user."""
+    doc = segments.from_docx(LETTER.read_bytes())
+    terms = BankTerms.load()
+    lt = FakeLanguageTool(
+        {
+            "recieved": "received",
+            "personaly": "personally",
+            "atleast": "at least",
+            "acounts": "accounts",
+            "updation": "update",
+            "lakh": "lake",
+            "CASA": "CASE",
+            "SARFAESI": "",
+        }
+    )
+    fake = llm(
+        issues(
+            ("borrowers has", "borrowers have", "Subject-verb agreement."),
+            ("issued vide our letter", "issued in our letter", "Archaic."),
+            ("may please be updated", "should be updated", "Awkward."),
+            ("failing which", "otherwise", "Awkward."),
+            ("positively", "without fail", "Odd usage."),
+            ("at the earliest", "as soon as possible", "Wordy."),
+        )
+    )
+    _, result, fake = run(doc, fake, lt)
+    text = result["text"]
+    found = {text[s["start"] : s["end"]] for s in result["suggestions"]}
+    assert {"recieved", "personaly", "atleast", "acounts", "borrowers has"} <= found
+    for start, end, term in terms.spans(text):
+        assert not flagged(text, result["suggestions"], start, end), term
+
+    system = fake.requests[0]["messages"][0]["content"]
+    assert "subject-verb agreement" in system
+    assert (
+        "Standard Indian banking and RBI usage is correct and must not be flagged"
+        in system
+    )
+    for term in ("vide", "updation", "may please", "SARFAESI", "CGM"):
+        assert f"'{term}'" in system
+
+
+def test_llm_categories_are_mapped():
+    fake = llm(
+        json.dumps(
+            {
+                "issues": [
+                    {
+                        "original": "has",
+                        "replacement": "have",
+                        "category": "grammar",
+                        "explanation": "x",
+                    },
+                    {
+                        "original": "Bellow",
+                        "replacement": "Below",
+                        "category": "wrong word",
+                        "explanation": "x",
+                    },
+                    {
+                        "original": "very",
+                        "replacement": "",
+                        "category": "nonsense",
+                        "explanation": "x",
+                    },
+                ]
+            }
+        )
+    )
+    _, result, _ = run(segments.from_text("Borrowers has very Bellow target."), fake)
+    assert [s["category"] for s in result["suggestions"]] == [
+        "grammar",
+        "clarity",
+        "spelling",
+    ]

@@ -3,6 +3,7 @@
 import io
 import json
 import re
+from pathlib import Path
 
 import pytest
 from docx import Document
@@ -17,6 +18,9 @@ from .fixtures import make_docx_with_tracked_change, make_rich_docx, make_xlsx
 from .mock_ollama import FakeLanguageTool, FakeOllama
 from .test_router import BASE, events, upload
 
+LETTER_PATH = (
+    Path(__file__).resolve().parents[3] / "samples" / "test_proofread_letter.docx"
+)
 _TEXT = re.compile(r"<text>\n(.*)\n</text>", re.DOTALL)
 
 
@@ -289,3 +293,19 @@ def test_export_docx_ignores_whitespace_only_edits(env):
     ).json()
     p = Document(io.BytesIO(download(client, body["file_id"]).content)).paragraphs[1]
     assert [r.bold for r in p.runs] == [None, True, None]  # runs untouched
+
+
+def test_export_saves_manual_edits_to_formalities(env):
+    """Rewrite never changes formalities, but the user may edit them by hand."""
+    client, _, _, _ = env
+    letter = (LETTER_PATH).read_bytes()
+    file_id = upload(client, "letter.docx", letter).json()["file_id"]
+    texts = [s.text for s in segments.from_docx(letter).segments]
+    texts[5] = "Dear Madam,"
+    body = client.post(
+        f"{BASE}/export",
+        json={"text": "\n\n".join(texts), "format": "docx", "source_file_id": file_id},
+    ).json()
+    after = segments.from_docx(download(client, body["file_id"]).content)
+    assert after.segments[5].text == "Dear Madam,"
+    assert any("letter formalities" in w for w in body["warnings"])

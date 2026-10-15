@@ -1,5 +1,6 @@
 import asyncio
 import re
+from pathlib import Path
 
 import pytest
 
@@ -208,13 +209,68 @@ def test_lookalike_characters_are_made_plain_unless_in_source():
 
 def test_whitespace_only_changes_keep_the_source_paragraph():
     doc = segments.from_text(
-        "Circular No. 14        Date: 15.10.2026\n\nPlease comply."
+        "Branch        Udaipur, deposits        Rs. 5,000\n\nPlease comply."
     )
     fake = FakeOllama(
-        responder=lambda body: "Circular No. 14 Date: 15.10.2026\n\nKindly comply."
+        responder=lambda body: "Branch Udaipur, deposits Rs. 5,000\n\nKindly comply."
     )
     events, _ = run(doc, fake=fake)
     assert final_paragraphs(events) == [
-        "Circular No. 14        Date: 15.10.2026",
+        "Branch        Udaipur, deposits        Rs. 5,000",
         "Kindly comply.",
+    ]
+
+
+# ---------------------------------------------------------------- letter formalities
+
+LETTER = Path(__file__).resolve().parents[3] / "samples" / "test_proofread_letter.docx"
+FORMALITIES = [
+    "Ref: ZO/JPR/ADV/2026/112\t\t\tDate: 15.10.2026",
+    "To,\nThe Branch Manager,\nUdaipur Main Branch",
+    "Subject: Recovery of overdue NPA accounts and KYC compliance",
+    "Dear Sir,",
+    "Yours faithfully,",
+    "(R. K. Verma)\nDeputy General Manager",
+]
+
+
+def test_letter_formalities_are_never_sent_or_changed():
+    doc = segments.from_docx(LETTER.read_bytes())
+
+    def careless_model(body):
+        # Rewrites everything it is given, including any closing it sees.
+        return "\n\n".join(
+            "With warm regards," if p == "Yours faithfully," else f"Kindly note: {p}"
+            for p in paragraphs_sent(body)
+        )
+
+    events, fake = run(doc, fake=FakeOllama(responder=careless_model))
+    sent = "\n".join(b["messages"][1]["content"] for b in fake.requests)
+    for formality in FORMALITIES:
+        assert formality not in sent
+    out = final_paragraphs(events)
+    for formality in FORMALITIES:
+        assert formality in out
+    assert "With warm regards," not in out
+    assert out[6].startswith("Kindly note: We have recieved")
+    source = next(e for e in events if e["type"] == "source")["paragraphs"]
+    assert source[17] == {
+        "text": "Yours faithfully,",
+        "editable": False,
+        "reason": "letter formality",
+    }
+    notices = [e["text"] for e in events if e["type"] == "notice"]
+    assert any("8 letter formality paragraph(s)" in n for n in notices)
+
+
+def test_pasted_letter_keeps_salutation_and_closing():
+    text = "Dear Sir,\n\nWe got your letter.\n\nYours sincerely,\n\nBranch Manager"
+    events, fake = run(segments.from_text(text))
+    assert len(fake.requests) == 1
+    assert paragraphs_sent(fake.requests[0]) == ["We got your letter."]
+    assert final_paragraphs(events) == [
+        "Dear Sir,",
+        "Kindly note: We got your letter.",
+        "Yours sincerely,",
+        "Branch Manager",
     ]

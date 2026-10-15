@@ -15,6 +15,7 @@ def test_check_sends_en_gb_and_returns_matches():
     fake = FakeLanguageTool({"Teh": "The"})
     matches = asyncio.run(fake.client().check("Teh branch is open."))
     assert fake.requests[0]["language"] == "en-GB"
+    assert fake.requests[0]["disabledRules"] == "OXFORD_SPELLING_Z_NOT_S"
     assert len(matches) == 1
     m = matches[0]
     assert (m.offset, m.length) == (0, 3)

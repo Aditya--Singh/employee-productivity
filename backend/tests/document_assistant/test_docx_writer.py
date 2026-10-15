@@ -15,7 +15,7 @@ from app.tabs.document_assistant.docx_writer import (
     replace_paragraphs,
 )
 
-from .fixtures import make_rich_docx
+from .fixtures import make_emphasis_docx, make_rich_docx
 
 SAMPLES = Path(__file__).resolve().parents[3] / "samples"
 
@@ -168,3 +168,79 @@ def test_new_docx_one_paragraph_per_block():
     content = new_docx("Dear Sir,\n\nYour account is active.\nThank you.\n\n")
     texts = [p.text for p in Document(io.BytesIO(content)).paragraphs]
     assert texts == ["Dear Sir,", "Your account is active.\nThank you."]
+
+
+# ---------------------------------------------------------------- emphasis after Rewrite
+
+
+def _runs(content: bytes, index: int) -> list[tuple[str, bool, bool, bool]]:
+    p = _paragraphs(content)[index]
+    return [(r.text, bool(r.bold), bool(r.italic), bool(r.underline)) for r in p.runs]
+
+
+def test_unchanged_bold_and_italic_phrases_keep_formatting():
+    edited = replace_paragraphs(
+        make_emphasis_docx(),
+        {0: "In this quarter, recovery in the NPA accounts remains below target."},
+    )
+    assert _runs(edited, 0) == [
+        ("In this quarter, recovery in the ", False, False, False),
+        ("NPA accounts", True, False, False),
+        (" remains ", False, False, False),
+        ("below target", False, True, False),
+        (".", False, False, False),
+    ]
+
+
+def test_changed_phrase_loses_emphasis_and_text_uses_main_formatting():
+    # "NPA accounts" no longer appears as is; the paragraph is mostly plain text.
+    edited = replace_paragraphs(
+        make_emphasis_docx(),
+        {0: "Recovery in non-performing accounts is below target."},
+    )
+    assert _runs(edited, 0) == [
+        ("Recovery in non-performing accounts is ", False, False, False),
+        ("below target", False, True, False),
+        (".", False, False, False),
+    ]
+
+
+def test_leading_bold_word_does_not_make_whole_paragraph_bold():
+    edited = replace_paragraphs(
+        make_emphasis_docx(),
+        {1: "Note: all branches are required to submit the report."},
+    )
+    assert _runs(edited, 1) == [
+        ("Note:", True, False, False),
+        (" all branches are required to ", False, False, False),
+        ("submit", False, False, True),
+        (" the report.", False, False, False),
+    ]
+
+
+def test_phrase_split_over_runs_and_whole_words_only():
+    edited = replace_paragraphs(
+        make_emphasis_docx(),
+        {2: "Overdue loans and overdue loansheets are rising in every zone."},
+    )
+    assert _runs(edited, 2) == [
+        ("Overdue loans", True, False, False),
+        (" and overdue loansheets are rising in every zone.", False, False, False),
+    ]
+
+
+def test_sample_letter_npa_accounts_stays_bold():
+    original = (SAMPLES / "test_proofread_letter.docx").read_bytes()
+    doc = segments.from_docx(original)
+    index = next(
+        i for i, s in enumerate(doc.segments) if "NPA accounts of your" in s.text
+    )
+    new = (
+        "We have received your report dated 05.10.2026 on the NPA accounts of your "
+        "branch. Recovery in these accounts is below the target of Rs. 25 lakh."
+    )
+    edited = replace_paragraphs(original, {index: new})
+    runs = _runs(edited, index)
+    assert "".join(r[0] for r in runs) == new
+    assert [r[0] for r in runs if r[1]] == ["NPA accounts"]
+    assert _kept_parts(edited) == _kept_parts(original)

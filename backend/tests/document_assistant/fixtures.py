@@ -170,3 +170,35 @@ def make_rich_docx() -> bytes:
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()
+
+
+def make_emphasis_docx() -> bytes:
+    """Paragraphs with bold, italic and underlined phrases inside normal text.
+
+    0 "Recovery in " + bold "NPA accounts" + " is " + italic "below target" + " this quarter."
+    1 bold "Note:" + " branches must " + underline "submit" + " the report."
+    2 bold "Overdue" + bold " loans" + " are rising."  (one phrase split over two runs)
+    """
+    from docx import Document
+
+    doc = Document()
+    p = doc.add_paragraph("Recovery in ")
+    p.add_run("NPA accounts").bold = True
+    p.add_run(" is ")
+    p.add_run("below target").italic = True
+    p.add_run(" this quarter.")
+
+    p = doc.add_paragraph()
+    p.add_run("Note:").bold = True
+    p.add_run(" branches must ")
+    p.add_run("submit").underline = True
+    p.add_run(" the report.")
+
+    p = doc.add_paragraph()
+    p.add_run("Overdue").bold = True
+    p.add_run(" loans").bold = True
+    p.add_run(" are rising in every zone this quarter.")
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()

@@ -18,6 +18,9 @@ from app.core.ollama import LOCAL_HOSTS
 # LanguageTool servers often limit request size; long text is sent in parts.
 MAX_REQUEST_CHARS = 20_000
 MAX_REPLACEMENTS = 5
+# Rules turned off by default. British bank style uses -ise ("organise", "mobilise"), so
+# LanguageTool's suggestion to switch to Oxford -ize spelling is a false alarm.
+DEFAULT_DISABLED_RULES = ("OXFORD_SPELLING_Z_NOT_S",)
 
 _PARAGRAPH_BREAK = re.compile(r"\n\s*\n")
 
@@ -71,12 +74,14 @@ class LanguageToolClient:
         self,
         base_url: str | None = None,
         language: str | None = None,
+        disabled_rules: tuple[str, ...] = DEFAULT_DISABLED_RULES,
         timeout: float = 120.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         settings = get_settings()
         self.base_url = (base_url or settings.languagetool_url).rstrip("/")
         self.language = language or settings.languagetool_language
+        self.disabled_rules = disabled_rules
         host = urlparse(self.base_url).hostname
         if host not in LOCAL_HOSTS:
             raise ValueError(
@@ -112,13 +117,17 @@ class LanguageToolClient:
                     matches.extend(await self._check_part(client, part, start))
         return matches
 
+    def _form(self, text: str) -> dict[str, str]:
+        form = {"text": text, "language": self.language}
+        if self.disabled_rules:
+            form["disabledRules"] = ",".join(self.disabled_rules)
+        return form
+
     async def _check_part(
         self, client: httpx.AsyncClient, part: str, base: int
     ) -> list[Match]:
         try:
-            resp = await client.post(
-                "/v2/check", data={"text": part, "language": self.language}
-            )
+            resp = await client.post("/v2/check", data=self._form(part))
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             raise LanguageToolError(

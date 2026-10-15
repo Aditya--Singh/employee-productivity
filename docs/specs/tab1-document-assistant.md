@@ -47,6 +47,10 @@ The tab has five modes, chosen from a mode selector at the top of the page.
   1. LanguageTool (`http://localhost:8120`, language `en-GB`) for spelling, grammar and
      punctuation. The language code is set in `core/config.py` as `LANGUAGETOOL_LANGUAGE`.
   2. The LLM for clarity and wording problems LanguageTool misses.
+- Standard Indian banking and RBI usage (for example "vide", "updation", "may please",
+  "lakh", "NPA") is correct and never flagged. The list is kept in
+  `reference/bank_terms.txt`, one word or phrase per line, and can be edited without code
+  changes. The LLM is also asked to check subject-verb agreement explicitly.
 - Each suggestion has: start offset, end offset, category, short explanation, and one or more
   replacements. Suggestions from both sources are merged and de-duplicated by overlapping range.
 - **UI:** the text is shown with issues underlined (colour by category). Clicking an issue shows
@@ -56,6 +60,10 @@ The tab has five modes, chosen from a mode selector at the top of the page.
   Section 5 states exactly which formatting survives.
 
 ### 3.3 Rewrite
+
+- Letter formalities are never rewritten: letterhead, reference and date lines, address
+  blocks, subject lines, salutations ("Dear Sir,"), closings ("Yours faithfully,") and
+  signature blocks are kept exactly as written.
 
 - Two styles:
   - **Formal / official:** standard bank correspondence.
@@ -184,7 +192,7 @@ reads and writes it.
 | Kept | May be lost or not edited |
 |------|---------------------------|
 | Paragraphs and runs that were not edited | Mixed formatting inside an edited span. If a fix spans several runs, for example a word that is half bold, the replacement takes the formatting of the first run. |
-| Formatting of a fix that sits inside one run | Character formatting inside a rewritten paragraph. Rewrite replaces whole paragraphs, so the paragraph style is kept but bold, italic or coloured words inside it become the formatting of the first run. |
+| Formatting of a fix that sits inside one run | Character formatting inside a rewritten paragraph. Rewrite replaces whole paragraphs, so the paragraph style is kept and the text takes the paragraph's main formatting. A bold, italic or underlined phrase that appears unchanged in the rewritten text gets its formatting back; other emphasis, colours and highlights are lost. |
 | Paragraph styles, numbering, indentation | Hyperlinks inside an edited span. Suggestions inside hyperlinks are shown but cannot be applied. |
 | Headers, footers, letterhead, images, page setup | Text in text boxes, footnotes, endnotes, comments and fields such as a table of contents. This text is not checked or edited in v1. |
 | Tables and their styles | Tracked changes. Files with tracked changes are rejected with a message asking the user to accept or reject them first. |

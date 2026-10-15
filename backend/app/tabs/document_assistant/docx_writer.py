@@ -9,7 +9,9 @@ fields, images, page breaks and similar content, and text inside hyperlinks, are
 touched, because python-docx would drop that content when it rewrites the run's text.
 """
 
+import copy
 import io
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -154,10 +156,76 @@ def apply_span_edits(
     return _save(doc), skipped
 
 
-def replace_paragraphs(content: bytes, new_texts: dict[int, str]) -> bytes:
-    """Replace whole paragraphs' text, keeping each paragraph's style and first run's format.
+_OFF = {"0", "false", "off", "none"}
 
-    Only paragraphs made entirely of plain runs can be replaced; others are left unchanged.
+
+def _emphasis(r) -> tuple[bool, bool, bool]:
+    """(bold, italic, underline) set directly on a run."""
+    rpr = r.find(qn("w:rPr"))
+
+    def on(tag: str) -> bool:
+        el = rpr.find(qn(tag)) if rpr is not None else None
+        return el is not None and el.get(qn("w:val"), "true").lower() not in _OFF
+
+    return on("w:b"), on("w:i"), on("w:u")
+
+
+def _emphasised_phrases(
+    runs: list, base: tuple[bool, bool, bool]
+) -> list[tuple[str, object]]:
+    """(phrase, template run) for each stretch of runs that is bold, italic or underlined
+    differently from the paragraph's main formatting."""
+    phrases: list[tuple[str, object]] = []
+    group: list = []
+    for r in [*runs, None]:
+        if r is not None and group and _emphasis(r) == _emphasis(group[0]):
+            group.append(r)
+            continue
+        if group and _emphasis(group[0]) != base and any(_emphasis(group[0])):
+            phrase = "".join(g.text for g in group).strip()
+            if len(phrase) >= 2:
+                phrases.append((phrase, group[0]))
+        group = [r] if r is not None else []
+    return phrases
+
+
+def _formatted_pieces(text: str, runs: list) -> list[tuple[str, object]]:
+    """Split new paragraph text into (text, template run) pieces.
+
+    The text takes the paragraph's main formatting (the one covering most characters).
+    A bold, italic or underlined phrase from the original that still appears unchanged
+    in the new text keeps its formatting (its first occurrence).
+    """
+    totals: dict[tuple[bool, bool, bool], int] = {}
+    for r in runs:
+        totals[_emphasis(r)] = totals.get(_emphasis(r), 0) + len(r.text)
+    base = max(totals, key=lambda k: totals[k])
+    base_run = next(r for r in runs if _emphasis(r) == base)
+
+    pieces: list[tuple[str, object]] = [(text, base_run)]
+    phrases = sorted(_emphasised_phrases(runs, base), key=lambda p: -len(p[0]))
+    for phrase, template in phrases:
+        pattern = re.compile(rf"(?<!\w){re.escape(phrase)}(?!\w)")
+        for k, (piece, owner) in enumerate(pieces):
+            m = pattern.search(piece) if owner is base_run else None
+            if m:
+                split = [
+                    (piece[: m.start()], base_run),
+                    (phrase, template),
+                    (piece[m.end() :], base_run),
+                ]
+                pieces[k : k + 1] = [x for x in split if x[0]]
+                break
+    return pieces
+
+
+def replace_paragraphs(content: bytes, new_texts: dict[int, str]) -> bytes:
+    """Replace whole paragraphs' text, keeping each paragraph's style.
+
+    The new text takes the paragraph's main character formatting. Bold, italic or
+    underlined phrases from the original that appear unchanged in the new text get their
+    formatting back. Only paragraphs made entirely of plain runs can be replaced; others
+    are left unchanged.
     """
     doc, paragraphs = _load(content)
     for index, text in new_texts.items():
@@ -169,8 +237,11 @@ def replace_paragraphs(content: bytes, new_texts: dict[int, str]) -> bytes:
         runs = p._p.xpath("w:r")
         if not runs:
             continue
-        runs[0].text = text
-        for r in runs[1:]:
+        for piece, template in _formatted_pieces(text, runs):
+            new_run = copy.deepcopy(template)
+            new_run.text = piece
+            runs[0].addprevious(new_run)
+        for r in runs:
             p._p.remove(r)
     return _save(doc)
 

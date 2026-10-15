@@ -250,12 +250,20 @@ async def rewrite_document(
             "texts": result,
         }
 
-    skipped = [s for s in segments if not s.rewritable]
-    if skipped:
+    formalities = sum(s.formality and s.replaceable for s in segments)
+    if formalities:
         yield {
             "type": "notice",
-            "text": f"{len(skipped)} paragraph(s) were left unchanged because they are "
-            "in a table or contain a link, field or image.",
+            "text": f"{formalities} letter formality paragraph(s) (letterhead, reference, "
+            "address, subject, salutation, closing or signature) were kept exactly as "
+            "written.",
+        }
+    other = sum(not s.replaceable for s in segments)
+    if other:
+        yield {
+            "type": "notice",
+            "text": f"{other} paragraph(s) were left unchanged because they are in a "
+            "table or contain a link, field or image.",
         }
     if unchanged_parts:
         parts = ", ".join(map(str, unchanged_parts))
