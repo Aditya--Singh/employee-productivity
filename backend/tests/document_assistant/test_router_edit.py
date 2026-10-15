@@ -309,3 +309,104 @@ def test_export_saves_manual_edits_to_formalities(env):
     after = segments.from_docx(download(client, body["file_id"]).content)
     assert after.segments[5].text == "Dear Madam,"
     assert any("letter formalities" in w for w in body["warnings"])
+
+
+# ------------------------------------- regression: letter formalities in the sample letter
+
+FORMALITY_TEXTS = [
+    "Ref: ZO/JPR/ADV/2026/112\t\t\tDate: 15.10.2026",
+    "To,\nThe Branch Manager,\nUdaipur Main Branch",
+    "Subject: Recovery of overdue NPA accounts and KYC compliance",
+    "Dear Sir,",
+    "Yours faithfully,",
+    "(R. K. Verma)\nDeputy General Manager",
+]
+
+
+def careless_polite(body: dict) -> str:
+    """A model that rewrites everything it sees, turns closings into "With warm regards,",
+    and tacks a closing onto the last paragraph it is given."""
+    sent = _TEXT.search(body["messages"][1]["content"]).group(1).split("\n\n")
+    out = [
+        "With warm regards," if p.startswith("Yours") else f"Kindly note: {p}"
+        for p in sent
+    ]
+    out[-1] += "\nWith warm regards,"
+    return "\n\n".join(out)
+
+
+def rewrite_events(client, payload) -> list[dict]:
+    evs = events(client.post(f"{BASE}/rewrite", json={**payload, "style": "polite"}))
+    assert evs[-1] == {"type": "done"}
+    return evs
+
+
+def joined(evs) -> str:
+    """The rewritten text exactly as the browser builds it."""
+    src = evs[0]["paragraphs"]
+    out = [p["text"] for p in src]
+    for e in evs:
+        if e["type"] == "section_end":
+            for i, t in zip(e["paragraphs"], e["texts"]):
+                out[i] = t
+    return "".join(
+        (p.get("before", "\n\n") if i else "") + t
+        for i, (p, t) in enumerate(zip(src, out))
+    )
+
+
+def _paragraph_xml(content: bytes) -> dict[str, bytes]:
+    from lxml import etree
+
+    return {
+        p.text: etree.tostring(p._p)
+        for p in Document(io.BytesIO(content)).paragraphs
+        if p.text in FORMALITY_TEXTS
+    }
+
+
+def test_sample_letter_formalities_byte_identical_after_polite_rewrite(env):
+    client, fake, _, _ = env
+    fake.responder = careless_polite
+    letter = LETTER_PATH.read_bytes()
+    file_id = upload(client, "letter.docx", letter).json()["file_id"]
+    evs = rewrite_events(client, {"file_id": file_id})
+
+    sent = "\n".join(b["messages"][1]["content"] for b in fake.requests)
+    for text in FORMALITY_TEXTS:
+        assert text not in sent
+    text = joined(evs)
+    assert "With warm regards," not in text  # the added closing was rejected
+    for formality in FORMALITY_TEXTS:
+        assert formality in text
+
+    body = client.post(
+        f"{BASE}/export",
+        json={"text": text, "format": "docx", "source_file_id": file_id},
+    ).json()
+    exported = download(client, body["file_id"]).content
+    before, after = _paragraph_xml(letter), _paragraph_xml(exported)
+    assert sorted(before) == sorted(FORMALITY_TEXTS)
+    assert after == before  # every formality paragraph is byte-identical XML
+
+
+def test_sample_letter_pasted_without_blank_lines_keeps_formalities(env):
+    client, fake, _, _ = env
+    fake.responder = careless_polite
+    paragraphs = [
+        p.text for p in Document(io.BytesIO(LETTER_PATH.read_bytes())).paragraphs
+    ]
+    pasted = "\n".join(p for p in paragraphs if p.strip())  # as copied out of Word
+    evs = rewrite_events(client, {"text": pasted})
+
+    sent = "\n".join(b["messages"][1]["content"] for b in fake.requests)
+    for line in ("Dear Sir,", "Yours faithfully,", "(R. K. Verma)", "To,"):
+        assert line not in sent
+    text = joined(evs)
+    assert "With warm regards," not in text
+    lines = text.split("\n")
+    for formality in FORMALITY_TEXTS:
+        for line in formality.split("\n"):
+            assert line in lines  # each formality line survives byte for byte
+    assert text.startswith(pasted.split("Dear Sir,")[0] + "Dear Sir,\n")
+    assert text.endswith("\nYours faithfully,\n(R. K. Verma)\nDeputy General Manager")

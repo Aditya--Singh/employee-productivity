@@ -140,3 +140,31 @@ def test_late_dear_sir_quote_is_not_a_salutation():
     paragraphs = [f"Body paragraph {i} about deposits and loans." for i in range(14)]
     doc = segments.from_text("\n\n".join([*paragraphs, "Dear Sir,", "More body text."]))
     assert formal_texts(doc) == ["Dear Sir,"]
+
+
+def test_pasted_letter_with_single_line_breaks_is_split_into_lines():
+    text = (
+        "Ref: ABC/12\r\nTo,\nThe Manager,\nABC Traders\nDear Sir,\n"
+        "We refer to your letter.\nPlease reply soon.\nYours faithfully,\n(R. K. Verma)\nDGM"
+    ).replace("\r\n", "\n")
+    doc = segments.from_text(text)
+    assert [s.text for s in doc.segments if s.rewritable] == [
+        "We refer to your letter.",
+        "Please reply soon.",
+    ]
+    assert len(doc.segments) == 10
+    for i, s in enumerate(doc.segments):
+        assert text[s.start : s.end] == s.text
+        assert doc.separator_before(i) == ("" if i == 0 else "\n")
+
+
+def test_hard_wrapped_prose_without_formalities_stays_one_paragraph():
+    text = (
+        "The branch met its target\nfor deposits this quarter\nand will review loans."
+    )
+    assert [s.text for s in segments.from_text(text).segments] == [text]
+
+
+def test_split_blocks_keeps_line_breaks_inside_blocks():
+    text = "To,\nThe Manager\n\nDear Sir,\n\n\nBody."
+    assert segments.split_blocks(text) == ["To,\nThe Manager", "Dear Sir,", "Body."]

@@ -113,6 +113,15 @@ def test_proofread_letter_flags_planted_errors_and_no_bank_terms():
         )
     )
     assert result["notices"] == []
+    # Accept all must never pick "personal" for "personaly": the LLM's pick comes first,
+    # and with several options it is auto-accepted only if the LLM confirmed it.
+    personaly = next(
+        s for s in suggestions if text[s["start"] : s["end"]] == "personaly"
+    )
+    assert personaly["replacements"][0] == "personally"
+    for s in suggestions:
+        if len(s["replacements"]) > 1 and s["auto_accept"]:
+            assert s["recommended"]
     missed = [
         error
         for error, (start, end) in planted_spans(text).items()
@@ -125,3 +134,63 @@ def test_proofread_letter_flags_planted_errors_and_no_bank_terms():
         if flagged(text, suggestions, start, end)
     ]
     assert touched == []
+
+
+def test_polite_rewrite_keeps_sample_letter_formalities_byte_identical():
+    """Regression: Rewrite (Polite) once turned "Yours faithfully," into "With warm
+    regards,". Rewrite the exact sample, uploaded and pasted, with the real model."""
+    import io
+
+    from docx import Document
+    from lxml import etree
+
+    from app.tabs.document_assistant import segments
+    from app.tabs.document_assistant.docx_writer import replace_paragraphs
+    from app.tabs.document_assistant.rewrite import rewrite_document
+    from tests.document_assistant.test_proofread import LETTER
+    from tests.document_assistant.test_router_edit import FORMALITY_TEXTS
+
+    letter = LETTER.read_bytes()
+
+    async def rewrite(doc):
+        client = OllamaClient(timeout=900.0)
+        events = [e async for e in rewrite_document(doc, "polite", client)]
+        out = [s.text for s in doc.segments]
+        for e in events:
+            if e["type"] == "section_end":
+                for i, t in zip(e["paragraphs"], e["texts"]):
+                    out[i] = t
+        return out
+
+    # Uploaded DOCX, saved back in place.
+    doc = segments.from_docx(letter)
+    out = asyncio.run(rewrite(doc))
+    print(f"\nrewritten body: {out[6][:100]!r}")
+    assert "With warm regards," not in "\n".join(out)
+    edited = replace_paragraphs(
+        letter, {i: t for i, t in enumerate(out) if doc.segments[i].rewritable}
+    )
+
+    def xml(content):
+        return {
+            p.text: etree.tostring(p._p)
+            for p in Document(io.BytesIO(content)).paragraphs
+            if p.text in FORMALITY_TEXTS
+        }
+
+    assert sorted(xml(letter)) == sorted(FORMALITY_TEXTS)
+    assert xml(edited) == xml(letter)
+
+    # The same letter pasted from Word, one line per paragraph.
+    paragraphs = [p.text for p in Document(io.BytesIO(letter)).paragraphs]
+    pasted = "\n".join(p for p in paragraphs if p.strip())
+    doc = segments.from_text(pasted)
+    out = asyncio.run(rewrite(doc))
+    text = "".join(
+        (doc.separator_before(i) if i else "") + t for i, t in enumerate(out)
+    )
+    assert "With warm regards," not in text
+    lines = text.split("\n")
+    for formality in FORMALITY_TEXTS:
+        for line in formality.split("\n"):
+            assert line in lines

@@ -344,7 +344,7 @@ async def export(req: ExportRequest, store: FileStore = Depends(get_store)) -> d
     elif stored is not None and stored.ext == ".docx":
         original = stored.read_bytes()
         doc = seg.from_docx(original)
-        paragraphs = [s.text for s in seg.from_text(text).segments]
+        paragraphs = seg.split_blocks(text)
         if len(paragraphs) != len(doc.segments):
             raise HTTPException(
                 status_code=422,

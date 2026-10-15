@@ -95,6 +95,12 @@ class SegmentedText:
                 return i, start - seg.start, end - seg.start
         return None
 
+    def separator_before(self, index: int) -> str:
+        """The original text between segment `index - 1` and segment `index`."""
+        if index == 0:
+            return ""
+        return self.text[self.segments[index - 1].end : self.segments[index].start]
+
     def is_applicable(self, start: int, end: int) -> bool:
         located = self.locate(start, end)
         if located is None:
@@ -122,6 +128,12 @@ def _kind(text: str) -> str | None:
     if _SALUTATION.match(first) or _REFERENCE.match(first) or _DATE_FIELD.search(first):
         return "header"
     return None
+
+
+def is_formal_line(line: str) -> bool:
+    """True if one line looks like a letter formality (salutation, closing, Ref/Date,
+    address, subject or signature)."""
+    return _kind(line.strip()) is not None
 
 
 def mark_formalities(segments: list[Segment]) -> list[Segment]:
@@ -168,19 +180,45 @@ def mark_formalities(segments: list[Segment]) -> list[Segment]:
     ]
 
 
+def _block_segments(start: int, block: str) -> list[Segment]:
+    """One segment for a blank-line-separated block, or one per line if it is a letter.
+
+    Text pasted from Word often has a single line break between paragraphs, so a whole
+    letter arrives as one block. If any line of a block is a letter formality ("Dear Sir,",
+    "Yours faithfully,", "Ref: ...", "To,", "Subject: ...", "(Name)"), every line becomes
+    its own paragraph, so the formalities can be told apart from the body.
+    """
+    lines = []
+    pos = 0
+    for line in block.split("\n"):
+        if line.strip():
+            lines.append((start + pos + line.index(line.strip()), line.strip()))
+        pos += len(line) + 1
+    if len(lines) > 1 and any(_kind(text) for _, text in lines):
+        return [Segment(offset, text) for offset, text in lines]
+    return [Segment(start, block)]
+
+
 def from_text(text: str) -> SegmentedText:
-    """Paragraphs are separated by blank lines. Offsets point into `text` unchanged."""
-    segments = []
+    """Paragraphs are separated by blank lines (or single line breaks in a pasted letter).
+    Offsets point into `text` unchanged."""
+    segments: list[Segment] = []
     pos = 0
     for m in [*_BREAK.finditer(text), None]:
         end = m.start() if m else len(text)
         chunk = text[pos:end]
         stripped = chunk.strip()
         if stripped:
-            segments.append(Segment(pos + chunk.index(stripped), stripped))
+            segments.extend(_block_segments(pos + chunk.index(stripped), stripped))
         if m:
             pos = m.end()
     return SegmentedText(text, mark_formalities(segments))
+
+
+def split_blocks(text: str) -> list[str]:
+    """Blank-line-separated blocks, stripped. Line breaks inside a block are kept, so a
+    Word paragraph with line breaks (an address block) stays one block."""
+    return [b.strip() for b in _BREAK.split(text) if b.strip()]
 
 
 def from_docx(content: bytes) -> SegmentedText:

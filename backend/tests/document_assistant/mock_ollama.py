@@ -59,9 +59,12 @@ class FakeOllama:
 
 
 class FakeLanguageTool:
-    """Reports every occurrence of each word in `errors` as a misspelling."""
+    """Reports every occurrence of each word in `errors` as a misspelling.
 
-    def __init__(self, errors: dict[str, str] | None = None, down=False):
+    A value is the replacement, or a list of replacements in LanguageTool's order.
+    """
+
+    def __init__(self, errors: dict[str, str | list[str]] | None = None, down=False):
         self.errors = errors or {}
         self.down = down
         self.requests: list[dict] = []
@@ -81,7 +84,10 @@ class FakeLanguageTool:
                 matches.append(
                     {
                         "message": f"Possible spelling mistake: {wrong}",
-                        "replacements": [{"value": right}],
+                        "replacements": [
+                            {"value": r}
+                            for r in ([right] if isinstance(right, str) else right)
+                        ],
                         # LanguageTool counts UTF-16 code units.
                         "offset": len(text[:start].encode("utf-16-le")) // 2,
                         "length": len(wrong.encode("utf-16-le")) // 2,

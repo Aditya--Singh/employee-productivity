@@ -16,7 +16,7 @@ from collections.abc import AsyncIterator
 from app.core.ollama import CHARS_PER_TOKEN, OllamaClient
 
 from .extraction import count_words
-from .segments import Segment, SegmentedText
+from .segments import Segment, SegmentedText, is_formal_line
 
 # Proofread and Rewrite accept about 20 pages, roughly 10,000 words (spec section 3.1), with
 # some headroom so a full 20-page document is not turned away for a few words.
@@ -184,6 +184,12 @@ def validate(source: list[str], output: list[str]) -> str | None:
     added = new_numbers("\n".join(source), "\n".join(output))
     if added:
         return f"added numbers not in the source: {', '.join(sorted(added))}"
+    # The model must not add a salutation, closing ("With warm regards,") or signature.
+    source_lines = {line.strip() for p in source for line in p.split("\n")}
+    for p in output:
+        for line in p.split("\n"):
+            if line.strip() not in source_lines and is_formal_line(line):
+                return f"added a letter formality: {line.strip()!r}"
     return None
 
 
@@ -202,8 +208,14 @@ async def rewrite_document(
     yield {
         "type": "source",
         "paragraphs": [
-            {"text": s.text, "editable": s.rewritable, "reason": s.skip_reason}
-            for s in segments
+            {
+                "text": s.text,
+                "editable": s.rewritable,
+                "reason": s.skip_reason,
+                # How to join this paragraph to the previous one, as in the original.
+                "before": doc.separator_before(i),
+            }
+            for i, s in enumerate(segments)
         ],
     }
 

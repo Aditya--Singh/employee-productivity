@@ -34,6 +34,11 @@ function styleFor(category: string) {
   return CATEGORY_STYLE[category] ?? CATEGORY_STYLE.grammar;
 }
 
+/** True if "Accept all" may apply this suggestion without asking. */
+export function autoAcceptable(s: Suggestion): boolean {
+  return s.applicable && s.replacements.length > 0 && (s.auto_accept ?? s.replacements.length === 1);
+}
+
 /** The accepted edits, ready to send to the server. */
 export function acceptedEdits(p: ProofreadState) {
   return p.suggestions
@@ -57,7 +62,9 @@ export default function ProofreadPanel(props: Props) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const undecided = p.suggestions.filter((s) => s.applicable && !(s.id in p.decisions)).length;
+  const pending = p.suggestions.filter((s) => s.applicable && !(s.id in p.decisions));
+  const autoPending = pending.filter(autoAcceptable).length;
+  const needChoice = pending.length - autoPending;
   const accepted = acceptedEdits(p).length;
 
   const copy = async (text: string) => {
@@ -132,7 +139,7 @@ export default function ProofreadPanel(props: Props) {
               Stop
             </button>
           )}
-          {p.status === "ready" && undecided > 0 && (
+          {p.status === "ready" && autoPending > 0 && (
             <button
               type="button"
               onClick={onAcceptAll}
@@ -188,6 +195,12 @@ export default function ProofreadPanel(props: Props) {
         )}
       </div>
 
+      {p.status === "ready" && needChoice > 0 && (
+        <p className="mt-3 rounded-md bg-pnb-cream px-3 py-2 text-sm text-slate-700">
+          {needChoice} suggestion{needChoice === 1 ? " needs" : "s need"} your choice. Click the
+          underlined text to pick a correction; Accept all leaves these for you.
+        </p>
+      )}
       {p.status === "ready" && (
         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
           {Object.entries(CATEGORY_STYLE).map(([key, c]) => (
@@ -300,14 +313,20 @@ function Popover({ suggestion: s, label, onDecide, onClose }: PopoverProps) {
       )}
       <span className="mt-3 flex flex-wrap gap-2">
         {s.applicable &&
-          s.replacements.map((r) => (
+          s.replacements.map((r, i) => (
             <button
               key={r}
               type="button"
               onClick={() => onDecide(s.id, r)}
+              title={i === 0 && s.recommended ? "Recommended for this sentence" : undefined}
               className="rounded-md bg-pnb-maroon px-3 py-1 text-sm font-medium text-white hover:bg-pnb-maroon-dark"
             >
               {r || "(remove)"}
+              {i === 0 && s.recommended && (
+                <span className="ml-1.5 rounded bg-pnb-gold px-1 text-[10px] font-semibold uppercase text-slate-900">
+                  Recommended
+                </span>
+              )}
             </button>
           ))}
         <button

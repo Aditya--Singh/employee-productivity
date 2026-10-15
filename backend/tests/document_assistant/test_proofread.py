@@ -7,12 +7,14 @@ import pytest
 from app.tabs.document_assistant import segments
 from app.tabs.document_assistant.bank_terms import BankTerms
 from app.tabs.document_assistant.proofread import (
+    CHOICES_SCHEMA,
     ISSUES_SCHEMA,
     LLM_DOWN_NOTICE,
     LT_DOWN_NOTICE,
     ProofreadUnavailable,
     Suggestion,
     apply_to_text,
+    llm_fix_for_span,
     merge,
     parse_issues,
     proofread_document,
@@ -318,3 +320,101 @@ def test_llm_categories_are_mapped():
         "clarity",
         "spelling",
     ]
+
+
+# ---------------------------------------------------------------- choosing between options
+
+
+def model_for(issues_reply: str, choices: dict[str, str] | None = None):
+    """Answers the main check with `issues_reply` and the ranking request with `choices`
+    (option text by flagged word)."""
+
+    def respond(body):
+        if body["format"] == CHOICES_SCHEMA:
+            items = json.loads(
+                body["messages"][1]["content"].split("\n", 1)[1].split(":\n", 1)[1]
+            )
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "id": it["id"],
+                            "choice": (choices or {}).get(it["flagged"], ""),
+                        }
+                        for it in items
+                    ]
+                }
+            )
+        return issues_reply
+
+    return FakeOllama(responder=respond)
+
+
+def by_text(result) -> dict[str, dict]:
+    return {result["text"][s["start"] : s["end"]]: s for s in result["suggestions"]}
+
+
+def test_several_options_are_ranked_but_not_auto_accepted():
+    text = "Please contact them personaly about the loan."
+    lt = FakeLanguageTool({"personaly": ["personal", "personally"]})
+    fake = model_for(issues(), {"personaly": "personally"})
+    _, result, fake = run(segments.from_text(text), fake, lt)
+    s = by_text(result)["personaly"]
+    assert s["replacements"] == ["personally", "personal"]
+    assert s["recommended"] is True
+    assert s["auto_accept"] is False  # the user still chooses
+    ranking = fake.requests[-1]
+    assert ranking["format"] == CHOICES_SCHEMA
+    assert "[[personaly]]" in ranking["messages"][1]["content"]
+
+
+def test_llm_independent_fix_confirms_option_for_accept_all():
+    text = "Please contact them personaly about the loan."
+    lt = FakeLanguageTool({"personaly": ["personal", "personally"]})
+    fake = model_for(
+        issues(("contact them personaly", "contact them personally", "Adverb."))
+    )
+    _, result, fake = run(segments.from_text(text), fake, lt)
+    s = by_text(result)["personaly"]
+    assert s["replacements"] == ["personally", "personal"]
+    assert s["auto_accept"] is True
+    assert all(
+        b["format"] != CHOICES_SCHEMA for b in fake.requests
+    )  # no ranking needed
+
+
+def test_llm_fix_that_differs_does_not_confirm():
+    text = "Please contact them personaly about the loan."
+    lt = FakeLanguageTool({"personaly": ["personal", "personally"]})
+    fake = model_for(issues(("contact them personaly", "meet them", "Shorter.")))
+    _, result, _ = run(segments.from_text(text), fake, lt)
+    assert by_text(result)["personaly"]["auto_accept"] is False
+
+
+def test_single_replacements_are_auto_accepted():
+    lt = FakeLanguageTool({"Teh": "The"})
+    fake = model_for(issues(("is open", "is now open", "Clearer.")))
+    _, result, _ = run(segments.from_text("Teh branch is open."), fake, lt)
+    assert [s["auto_accept"] for s in result["suggestions"]] == [True, True]
+    assert [s["recommended"] for s in result["suggestions"]] == [False, False]
+
+
+def test_ranking_choice_outside_options_is_ignored():
+    lt = FakeLanguageTool({"personaly": ["personal", "personally"]})
+    fake = model_for(issues(), {"personaly": "personalised"})
+    _, result, _ = run(segments.from_text("Meet them personaly."), fake, lt)
+    s = by_text(result)["personaly"]
+    assert s["replacements"] == ["personal", "personally"]
+    assert s["recommended"] is False
+    assert s["auto_accept"] is False
+
+
+def test_llm_fix_for_span():
+    text = "contact them personaly today"
+    lt = sug(13, 22, "languagetool")
+    llm_wide = Suggestion(8, 22, "grammar", "m", ["them personally"], "llm")
+    llm_narrow = Suggestion(13, 22, "grammar", "m", ["personally"], "llm")
+    llm_off = Suggestion(0, 7, "grammar", "m", ["call"], "llm")
+    assert llm_fix_for_span(text, lt, llm_wide) == "personally"
+    assert llm_fix_for_span(text, lt, llm_narrow) == "personally"
+    assert llm_fix_for_span(text, lt, llm_off) is None

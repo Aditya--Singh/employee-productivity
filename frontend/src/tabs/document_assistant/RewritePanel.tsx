@@ -25,9 +25,12 @@ export const IDLE_REWRITE: RewriteState = {
   notices: [],
 };
 
-/** Joined text: rewritten paragraphs where ready, the original elsewhere. */
+/** Joined text: rewritten paragraphs where ready, the original elsewhere, with the
+ * original line breaks between paragraphs. */
 export function finalText(r: RewriteState): string {
-  return r.source.map((p, i) => r.output[i] ?? p.text).join("\n\n");
+  return r.source
+    .map((p, i) => (i === 0 ? "" : (p.before ?? "\n\n")) + (r.output[i] ?? p.text))
+    .join("");
 }
 
 type Props = {

@@ -11,7 +11,12 @@ import {
 } from "./api";
 import InputPanel from "./InputPanel";
 import ModeSelector, { type Mode } from "./ModeSelector";
-import ProofreadPanel, { IDLE_PROOFREAD, acceptedEdits, type ProofreadState } from "./ProofreadPanel";
+import ProofreadPanel, {
+  IDLE_PROOFREAD,
+  acceptedEdits,
+  autoAcceptable,
+  type ProofreadState,
+} from "./ProofreadPanel";
 import ResultPanel, { type ResultState } from "./ResultPanel";
 import RewritePanel, { IDLE_REWRITE, finalText, type RewriteState } from "./RewritePanel";
 
@@ -280,10 +285,9 @@ export default function DocumentAssistantPage() {
   const acceptAll = () =>
     setProofread((p) => {
       const decisions = { ...p.decisions };
+      // Only unambiguous fixes; suggestions with several options wait for the user.
       for (const s of p.suggestions) {
-        if (s.applicable && !(s.id in decisions) && s.replacements.length > 0) {
-          decisions[s.id] = s.replacements[0];
-        }
+        if (!(s.id in decisions) && autoAcceptable(s)) decisions[s.id] = s.replacements[0];
       }
       return { ...p, decisions };
     });

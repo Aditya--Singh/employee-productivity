@@ -17,6 +17,7 @@ from app.tabs.document_assistant.rewrite import (
     plan_sections,
     rewrite_document,
     split_paragraphs,
+    validate,
 )
 from tests.docgen import make_document
 
@@ -258,6 +259,7 @@ def test_letter_formalities_are_never_sent_or_changed():
         "text": "Yours faithfully,",
         "editable": False,
         "reason": "letter formality",
+        "before": "\n\n",
     }
     notices = [e["text"] for e in events if e["type"] == "notice"]
     assert any("8 letter formality paragraph(s)" in n for n in notices)
@@ -274,3 +276,17 @@ def test_pasted_letter_keeps_salutation_and_closing():
         "Yours sincerely,",
         "Branch Manager",
     ]
+
+
+def test_output_adding_a_closing_is_rejected():
+    doc = segments.from_text("Please submit the report by Friday.")
+    replies = iter(
+        [
+            "Kindly submit the report by Friday.\nWith warm regards,",
+            "Kindly submit the report by Friday.",
+        ]
+    )
+    events, fake = run(doc, fake=FakeOllama(responder=lambda body: next(replies)))
+    assert len(fake.requests) == 2
+    assert final_paragraphs(events) == ["Kindly submit the report by Friday."]
+    assert validate(["Dear Sir,"], ["Dear Sir,"]) is None  # unchanged formality is fine

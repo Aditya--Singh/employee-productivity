@@ -28,9 +28,19 @@ export type Suggestion = {
   replacements: string[];
   source: "languagetool" | "llm";
   applicable: boolean;
+  // Safe for "Accept all": one replacement, or the LLM made the same fix independently.
+  auto_accept?: boolean;
+  // The first replacement is the LLM's pick, using the sentence context.
+  recommended?: boolean;
 };
 
-export type SourceParagraph = { text: string; editable: boolean; reason: string };
+export type SourceParagraph = {
+  text: string;
+  editable: boolean;
+  reason: string;
+  // The original text between this paragraph and the previous one ("\n\n" or "\n").
+  before?: string;
+};
 
 export type StreamEvent =
   | { type: "status"; text: string }
