@@ -16,6 +16,10 @@ package = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = "-m 'not ollama'"
+markers = [
+    "ollama: needs a live local Ollama server; run with `uv run pytest -m ollama`",
+]
 
 [dependency-groups]
 dev = [

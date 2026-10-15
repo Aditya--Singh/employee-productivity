@@ -91,3 +91,67 @@ def test_oversize_file():
 def test_size_limit_from_env(monkeypatch):
     monkeypatch.setenv("MAX_UPLOAD_MB", "1")
     assert_rejected(413, "big.txt", b"a" * (1024 * 1024 + 1))
+
+
+# --- PPTX, XLSX, CSV, JSON ----------------------------------------------------
+
+ALL_TYPES = {".pdf", ".docx", ".txt", ".pptx", ".xlsx", ".csv", ".json"}
+
+
+def make_office_zip(*members):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name in members:
+            zf.writestr(name, "<x/>")
+    return buf.getvalue()
+
+
+PPTX = make_office_zip("[Content_Types].xml", "ppt/presentation.xml")
+XLSX = make_office_zip("[Content_Types].xml", "xl/workbook.xml")
+XLSX_MACRO = make_office_zip("xl/workbook.xml", "xl/vbaProject.bin")
+
+
+@pytest.mark.parametrize(
+    "name,data,ext",
+    [
+        ("deck.pptx", PPTX, ".pptx"),
+        ("Report.XLSX", XLSX, ".xlsx"),
+        ("branches.csv", b"branch,amount\nUdaipur,100\n", ".csv"),
+        ("excel-export.csv", b"\xef\xbb\xbfbranch,amount\nJaipur,5\n", ".csv"),
+        ("data.json", b'{"rows": [{"a": 1}]}', ".json"),
+        ("bom.json", b"\xef\xbb\xbf[1, 2, 3]", ".json"),
+    ],
+)
+def test_new_valid_types(name, data, ext):
+    f = check(name, data, allowed=ALL_TYPES)
+    assert f.ext == ext
+    assert f.content == data
+
+
+@pytest.mark.parametrize(
+    "name,data",
+    [
+        ("letter.pptx", make_docx()),
+        ("deck.xlsx", PPTX),
+        ("sheet.docx", XLSX),
+        ("macro.xlsx", XLSX_MACRO),
+        ("notzip.pptx", b"%PDF-1.4"),
+        ("broken.json", b'{"a": 1,'),
+        ("binary.csv", b"\xff\xfe\x00\x81"),
+        ("nul.csv", b"a,b\x00\n1,2\n"),
+        ("nul.txt", b"hello\x00world"),
+        ("utf16.json", '{"a": 1}'.encode("utf-16")),
+    ],
+)
+def test_new_types_content_mismatch(name, data):
+    assert_rejected(415, name, data, allowed=ALL_TYPES)
+
+
+def test_new_types_not_allowed_by_default():
+    assert_rejected(415, "deck.pptx", PPTX)
+    assert_rejected(415, "data.csv", b"a,b\n")
+
+
+def test_unsupported_type_in_allowlist_is_a_programming_error():
+    with pytest.raises(ValueError, match=".exe"):
+        check("a.txt", b"x", allowed={".txt", ".exe"})
