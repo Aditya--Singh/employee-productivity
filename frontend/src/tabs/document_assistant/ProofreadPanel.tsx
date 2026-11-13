@@ -34,6 +34,17 @@ function styleFor(category: string) {
   return CATEGORY_STYLE[category] ?? CATEGORY_STYLE.grammar;
 }
 
+const CORRECTED_FILE_LABEL: Record<string, string> = {
+  docx: "Word (original file, corrected)",
+  xlsx: "Excel (original file, corrected)",
+  csv: "CSV (corrected)",
+  json: "JSON (corrected)",
+};
+
+function extension(filename: string): string {
+  return filename.split(".").pop()?.toLowerCase() ?? "";
+}
+
 /** True if "Accept all" may apply this suggestion without asking. */
 export function autoAcceptable(s: Suggestion): boolean {
   return s.applicable && s.replacements.length > 0 && (s.auto_accept ?? s.replacements.length === 1);
@@ -82,8 +93,16 @@ export default function ProofreadPanel(props: Props) {
     const options: DownloadOption[] = [];
     if (applied.file_id && applied.filename) {
       const result = { file_id: applied.file_id, filename: applied.filename, warnings: applied.warnings };
-      options.push({ label: "Word (original file, corrected)", make: () => Promise.resolve(result) });
-      options.push(...textDownloads(applied.text, file).filter((o) => o.label.startsWith("Text")));
+      const ext = extension(applied.filename);
+      options.push({ label: CORRECTED_FILE_LABEL[ext] ?? applied.filename, make: () => Promise.resolve(result) });
+      // A data file comes back in its own format only (spec section 4).
+      if (file?.kind !== "data") {
+        options.push(...textDownloads(applied.text, file).filter((o) => o.label.startsWith("Text")));
+      }
+      for (const alt of applied.alternatives ?? []) {
+        const altResult = { file_id: alt.file_id, filename: alt.filename, warnings: [] };
+        options.push({ label: alt.label, make: () => Promise.resolve(altResult) });
+      }
     } else {
       options.push(...textDownloads(applied.text, isDocx(file) ? null : file));
     }

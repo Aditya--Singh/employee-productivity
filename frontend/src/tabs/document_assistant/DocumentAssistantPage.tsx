@@ -8,7 +8,15 @@ import {
   type ExtractResult,
   type Source,
   type StreamEvent,
+  type StreamPath,
 } from "./api";
+import DataChatPanel, {
+  IDLE_CHAT,
+  chatHistory,
+  restoreChat,
+  type ChatState,
+  type ChatTurn,
+} from "./DataChatPanel";
 import InputPanel from "./InputPanel";
 import ModeSelector, { type Mode } from "./ModeSelector";
 import ProofreadPanel, {
@@ -33,6 +41,7 @@ type Saved = {
   style?: Style;
   rewrite?: RewriteState;
   proofread?: ProofreadState;
+  chat?: ChatState;
 };
 
 function loadSaved(): Saved | null {
@@ -80,6 +89,7 @@ export default function DocumentAssistantPage() {
   const [proofread, setProofread] = useState<ProofreadState>(() =>
     restoreProofread(saved?.proofread),
   );
+  const [chat, setChat] = useState<ChatState>(() => restoreChat(saved?.chat));
   const [applying, setApplying] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -87,22 +97,26 @@ export default function DocumentAssistantPage() {
 
   useEffect(() => {
     try {
-      const data: Saved = { mode, text, file, result: result.text, style, rewrite, proofread };
+      const data: Saved = { mode, text, file, result: result.text, style, rewrite, proofread, chat };
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     } catch {
       // Storage full or blocked: work continues, it just will not survive a refresh.
     }
-  }, [mode, text, file, result.text, style, rewrite, proofread]);
+  }, [mode, text, file, result.text, style, rewrite, proofread, chat]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const streaming =
-    result.status === "streaming" || rewrite.status === "streaming" || proofread.status === "checking";
+    result.status === "streaming" ||
+    rewrite.status === "streaming" ||
+    proofread.status === "checking" ||
+    chat.turns.some((t) => t.status === "thinking");
 
   const resetResults = () => {
     setResult(IDLE);
     setRewrite(IDLE_REWRITE);
     setProofread(IDLE_PROOFREAD);
+    setChat(IDLE_CHAT);
   };
 
   const upload = async (f: File) => {
@@ -146,7 +160,7 @@ export default function DocumentAssistantPage() {
    * pressed Stop, "ended" when the stream closed, or an error message.
    */
   const run = async (
-    path: "/summarize" | "/rewrite" | "/proofread",
+    path: StreamPath,
     body: object,
     onEvent: (ev: StreamEvent) => void,
     onEnd: (outcome: "stopped" | "ended" | { message: string }) => void,
@@ -273,6 +287,54 @@ export default function DocumentAssistantPage() {
     );
   };
 
+  const askData = (question: string) => {
+    if (!file) return;
+    const history = chatHistory(chat);
+    // Only the last turn is ever in progress.
+    const updateLast = (f: (t: ChatTurn) => ChatTurn) =>
+      setChat((c) => ({ turns: c.turns.map((t, i) => (i === c.turns.length - 1 ? f(t) : t)) }));
+    setChat((c) => ({ turns: [...c.turns, { question, status: "thinking" }] }));
+    return run(
+      "/data/ask",
+      { file_id: file.file_id, question, history },
+      (ev) =>
+        updateLast((t) => {
+          switch (ev.type) {
+            case "status":
+              return { ...t, progress: ev.text };
+            case "operation":
+              return { ...t, operation: ev.operation };
+            case "table": {
+              const { type: _, ...table } = ev;
+              return { ...t, table };
+            }
+            case "answer_start":
+              return { ...t, live: "" };
+            case "chunk":
+              return t.live === undefined ? t : { ...t, live: t.live + ev.text };
+            case "answer":
+              return ev.text
+                ? { ...t, live: undefined, answer: ev.text }
+                : { ...t, live: undefined, message: ev.message };
+            case "unsupported":
+              return { ...t, message: ev.message };
+            case "done":
+              return { ...t, status: "done", progress: undefined };
+            case "error":
+              return { ...t, status: "error", live: undefined, error: { code: ev.code, message: ev.message } };
+            default:
+              return t;
+          }
+        }),
+      (outcome) =>
+        updateLast((t) => {
+          if (outcome === "stopped") return { ...t, status: "stopped", live: undefined };
+          if (outcome !== "ended") return { ...t, status: "error", live: undefined, error: { code: "request", ...outcome } };
+          return t.status === "thinking" ? { ...t, status: "error", live: undefined, error: INTERRUPTED } : t;
+        }),
+    );
+  };
+
   const decide = (id: string, replacement: string | null) =>
     setProofread((p) => {
       const decisions = { ...p.decisions };
@@ -310,7 +372,7 @@ export default function DocumentAssistantPage() {
   const stop = () => abortRef.current?.abort();
 
   const action = mode === "rewrite" ? startRewrite : mode === "proofread" ? startProofread : summarize;
-  const dataFileInTextMode = file?.kind === "data" && (mode === "rewrite" || mode === "proofread");
+  const dataFileInTextMode = file?.kind === "data" && mode === "rewrite";
   const canRun =
     !streaming && !uploading && !dataFileInTextMode && (file !== null || text.trim().length > 0);
   const [label, busyLabel] = ACTION_LABEL[mode];
@@ -319,8 +381,8 @@ export default function DocumentAssistantPage() {
     <section>
       <h1 className="text-2xl font-semibold text-pnb-maroon">Document Assistant</h1>
       <p className="mt-2 max-w-2xl text-slate-600">
-        Proofread, rewrite and summarize letters, circulars, reports and data files. Everything runs
-        on this machine.
+        Proofread, rewrite and summarize letters, circulars, reports and data files, and ask
+        questions about spreadsheets. Everything runs on this machine.
       </p>
 
       <div className="mt-8">
@@ -373,30 +435,47 @@ export default function DocumentAssistantPage() {
           )}
           {dataFileInTextMode && (
             <p className="mt-4 rounded-md bg-pnb-cream px-3 py-2 text-sm text-slate-700">
-              Proofread and Rewrite work on documents and text. For data files, use Summarize.
+              Rewrite works on documents and text. For data files, use Proofread, Summarize or Ask
+              about data.
             </p>
           )}
-          <div className="mt-6 flex flex-wrap items-center gap-4">
-            <button
-              type="button"
-              onClick={action}
-              disabled={!canRun}
-              className="rounded-md bg-pnb-maroon px-6 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-pnb-maroon-dark focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pnb-gold disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {streaming ? busyLabel : label}
-            </button>
-            {!file && text && !streaming && (
+          {file?.kind === "data" && mode === "proofread" && (
+            <p className="mt-4 rounded-md bg-pnb-cream px-3 py-2 text-sm text-slate-700">
+              Only text columns are checked. Numbers, amounts, dates and codes are left as they
+              are.
+            </p>
+          )}
+          {mode !== "data" && (
+            <div className="mt-6 flex flex-wrap items-center gap-4">
               <button
                 type="button"
-                onClick={clear}
-                className="text-sm text-slate-500 hover:text-pnb-maroon"
+                onClick={action}
+                disabled={!canRun}
+                className="rounded-md bg-pnb-maroon px-6 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-pnb-maroon-dark focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pnb-gold disabled:cursor-not-allowed disabled:opacity-40"
               >
-                Clear
+                {streaming ? busyLabel : label}
               </button>
-            )}
-          </div>
+              {!file && text && !streaming && (
+                <button
+                  type="button"
+                  onClick={clear}
+                  className="text-sm text-slate-500 hover:text-pnb-maroon"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          )}
         </div>
-        {mode === "rewrite" ? (
+        {mode === "data" ? (
+          <DataChatPanel
+            chat={chat}
+            file={file}
+            onAsk={askData}
+            onStop={stop}
+            onNewConversation={() => setChat(IDLE_CHAT)}
+          />
+        ) : mode === "rewrite" ? (
           <RewritePanel
             rewrite={rewrite}
             file={file}

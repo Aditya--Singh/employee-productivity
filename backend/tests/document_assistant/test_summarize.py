@@ -94,7 +94,9 @@ def test_over_length_text_rejected():
         check_length("word " * (MAX_SUMMARY_WORDS + 1))
     assert "60,000" in str(err.value)
     with pytest.raises(SummaryTooLong):
-        collect(summarize_text("word " * (MAX_SUMMARY_WORDS + 1), FakeOllama().client()))
+        collect(
+            summarize_text("word " * (MAX_SUMMARY_WORDS + 1), FakeOllama().client())
+        )
 
 
 def _loans():

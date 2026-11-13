@@ -194,3 +194,47 @@ def test_polite_rewrite_keeps_sample_letter_formalities_byte_identical():
     for formality in FORMALITY_TEXTS:
         for line in formality.split("\n"):
             assert line in lines
+
+
+def test_data_chat_computes_with_pandas_and_answers_with_its_figures():
+    """Phase 4: on samples/test_loans.xlsx the real model picks operations that pandas runs,
+    a follow-up question uses the earlier turn, and each answer passes the number check
+    (every figure copied from the result, in Indian digit grouping)."""
+    from pathlib import Path
+
+    from app.core.uploads import ValidatedFile
+    from app.tabs.document_assistant.data_chat import ask
+    from app.tabs.document_assistant.extraction import extract
+
+    path = Path(__file__).resolve().parents[2] / "samples" / "test_loans.xlsx"
+    sheets = extract(ValidatedFile(path.name, ".xlsx", path.read_bytes())).sheets
+
+    def turn(question, history):
+        async def collect():
+            client = OllamaClient(timeout=900.0)
+            return [e async for e in ask(sheets, question, history, client)]
+
+        events = {e["type"]: e for e in asyncio.run(collect())}
+        print(
+            f"\n{question!r}: operation={events.get('operation')} "
+            f"rows={events.get('table', {}).get('rows')} answer={events.get('answer')} "
+            f"unsupported={events.get('unsupported')} error={events.get('error')}"
+        )
+        return events
+
+    first = turn("What is the total outstanding amount across all loans?", [])
+    assert first["table"]["rows"] == [["97,23,750"]]
+    assert first["answer"]["text"] is not None, "the answer failed the number check twice"
+    assert "97,23,750" in first["answer"]["text"]
+
+    history = [
+        {
+            "question": "What is the total outstanding amount across all loans?",
+            "operation": first["operation"]["operation"],
+            "answer": first["answer"]["text"],
+        }
+    ]
+    second = turn("And for the Udaipur branch only?", history)
+    assert second["table"]["rows"] == [["27,45,750"]]
+    assert second["answer"]["text"] is not None, "the answer failed the number check twice"
+    assert "27,45,750" in second["answer"]["text"]

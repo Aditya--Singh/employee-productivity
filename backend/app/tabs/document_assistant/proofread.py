@@ -29,6 +29,7 @@ from app.core.ollama import OllamaClient, OllamaContextError, OllamaError
 
 from .bank_terms import BankTerms
 from .rewrite import (
+    SECTION_MAX_PARAGRAPHS,
     check_length,
     new_numbers,
     output_budget,
@@ -420,8 +421,13 @@ async def proofread_document(
     client: OllamaClient,
     lt: LanguageToolClient,
     terms: BankTerms | None = None,
+    max_paragraphs: int = SECTION_MAX_PARAGRAPHS,
 ) -> AsyncIterator[dict]:
-    """Yield "status" events, then one "result" event with text, suggestions and notices."""
+    """Yield "status" events, then one "result" event with text, suggestions and notices.
+
+    `max_paragraphs` sets how many paragraphs the LLM checks per request. Data files use
+    more, since their "paragraphs" are short cell values.
+    """
     check_length(doc.text, "Proofread")
     terms = terms if terms is not None else BankTerms.load()
     system = proofread_system(terms)
@@ -437,7 +443,9 @@ async def proofread_document(
     llm_found: list[Suggestion] = []
     llm_ok = True
     failed_parts: list[int] = []
-    sections = plan_sections(doc.segments, only_rewritable=False)
+    sections = plan_sections(
+        doc.segments, max_paragraphs=max_paragraphs, only_rewritable=False
+    )
     for number, indices in enumerate(sections, start=1):
         yield {
             "type": "status",

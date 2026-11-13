@@ -42,6 +42,23 @@ export type SourceParagraph = {
   before?: string;
 };
 
+/** A table computed with pandas for "Ask about data". Cells are display strings. */
+export type DataTable = {
+  description: string;
+  columns: string[];
+  // "number" columns are right-aligned.
+  kinds: string[];
+  rows: string[][];
+  total_rows: number;
+};
+
+/** An earlier question, sent back with each new one. The server keeps no chat state. */
+export type ChatHistoryTurn = {
+  question: string;
+  operation: Record<string, unknown> | null;
+  answer: string | null;
+};
+
 export type StreamEvent =
   | { type: "status"; text: string }
   | { type: "chunk"; text: string; index?: number }
@@ -53,7 +70,14 @@ export type StreamEvent =
   | { type: "section_start"; index: number; paragraphs: number[] }
   | { type: "section_end"; index: number; paragraphs: number[]; texts: string[] }
   // Proofread
-  | { type: "result"; text: string; suggestions: Suggestion[]; notices: string[] };
+  | { type: "result"; text: string; suggestions: Suggestion[]; notices: string[] }
+  // Ask about data
+  | { type: "operation"; operation: Record<string, unknown> }
+  | ({ type: "table" } & DataTable)
+  | { type: "answer_start" }
+  // text is null when the answer did not match the computed figures; message says why.
+  | { type: "answer"; text: string | null; message?: string }
+  | { type: "unsupported"; message: string };
 
 export type Source = { text: string } | { file_id: string };
 
@@ -65,6 +89,9 @@ export type AppliedResult = {
   warnings: string[];
   file_id?: string;
   filename?: string;
+  // Other downloads of the same result, e.g. a CSV of an edited sheet whose workbook
+  // has charts that the corrected XLSX loses.
+  alternatives?: { file_id: string; filename: string; label: string }[];
 };
 
 /** An error with a plain-English message safe to show to users. */
@@ -152,13 +179,15 @@ export function streamSummary(
   return streamEvents("/summarize", body, onEvent, signal);
 }
 
+export type StreamPath = "/summarize" | "/rewrite" | "/proofread" | "/data/ask";
+
 /**
  * POST a request and call `onEvent` for each server-sent event.
  * EventSource cannot send a POST body, so the stream is read with fetch.
  * Aborting `signal` stops the stream and, on the server, the model.
  */
 export async function streamEvents(
-  path: "/summarize" | "/rewrite" | "/proofread",
+  path: StreamPath,
   body: object,
   onEvent: (event: StreamEvent) => void,
   signal: AbortSignal,

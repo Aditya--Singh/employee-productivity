@@ -161,8 +161,14 @@ def test_unique_codes_with_leading_zero_are_identifiers():
 
 
 def test_unique_same_length_six_digit_codes_are_identifiers():
-    assert column_stats("Ref", pd.Series(["313001", "302001", "110075"])).kind == "identifier"
-    assert column_stats("Ref", pd.Series([100245678901, 100245678902])).kind == "identifier"
+    assert (
+        column_stats("Ref", pd.Series(["313001", "302001", "110075"])).kind
+        == "identifier"
+    )
+    assert (
+        column_stats("Ref", pd.Series([100245678901, 100245678902])).kind
+        == "identifier"
+    )
 
 
 @pytest.mark.parametrize(
@@ -181,9 +187,24 @@ def test_unique_rule_needs_code_shape(values):
 @pytest.mark.parametrize(
     "name",
     [
-        "CASA Deposits", "Advances", "Loan", "Credit", "Debit", "Income", "Expenses",
-        "Cost", "Fees", "Interest", "Limit", "Value", "Profit", "NPA", "Premium",
-        "Sanctioned", "Outstanding", "Disbursed",
+        "CASA Deposits",
+        "Advances",
+        "Loan",
+        "Credit",
+        "Debit",
+        "Income",
+        "Expenses",
+        "Cost",
+        "Fees",
+        "Interest",
+        "Limit",
+        "Value",
+        "Profit",
+        "NPA",
+        "Premium",
+        "Sanctioned",
+        "Outstanding",
+        "Disbursed",
     ],
 )
 def test_money_names_are_never_read_as_codes(name):

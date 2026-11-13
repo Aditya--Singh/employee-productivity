@@ -25,6 +25,7 @@ ID_NAME_TOKENS = frozenset(
 )
 # Names that mark a column as an amount or quantity, so its values are never read as codes.
 # Matched against singular word forms, so "Deposits" matches "deposit".
+# fmt: off
 AMOUNT_NAME_TOKENS = frozenset(
     {
         "amount", "amt", "balance", "bal", "total", "value", "price", "cost", "salary",
@@ -34,6 +35,7 @@ AMOUNT_NAME_TOKENS = frozenset(
         "qty", "quantity", "count", "rs", "inr", "rupee", "lakh", "crore",
     }
 )
+# fmt: on
 MIN_CODE_LENGTH = 6
 TOP_VALUES = 5
 MAX_CATEGORIES_FOR_TOP = 50
@@ -162,6 +164,29 @@ def _parse_dates(series: pd.Series) -> pd.Series | None:
     if parsed.isna().any():
         return None
     return parsed
+
+
+def to_numbers(series: pd.Series) -> pd.Series:
+    """A "number" column (see `column_stats`) as floats; empty cells become NaN."""
+    if pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_bool_dtype(series):
+        return series.astype("float64")
+    result = pd.Series(float("nan"), index=series.index, dtype="float64")
+    for index, value in series.items():
+        number = _as_number(value)
+        if number is not None:
+            result[index] = number
+    return result
+
+
+def to_dates(series: pd.Series) -> pd.Series:
+    """A "date" column (see `column_stats`) as datetimes; empty cells become NaT."""
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series
+    result = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+    parsed = _parse_dates(series)
+    if parsed is not None:
+        result[parsed.index] = parsed
+    return result
 
 
 # ---------------------------------------------------------------- statistics

@@ -53,9 +53,14 @@ def test_extract_text_then_summarize_by_file_id(env):
 
     resp = client.post(f"{BASE}/summarize", json={"file_id": body["file_id"]})
     evs = events(resp)
-    assert "".join(e["text"] for e in evs if e["type"] == "chunk") == "Here is the summary."
+    assert (
+        "".join(e["text"] for e in evs if e["type"] == "chunk")
+        == "Here is the summary."
+    )
     assert evs[-1] == {"type": "done"}
-    assert "Branch audit is due on 31 March." in fake.requests[0]["messages"][1]["content"]
+    assert (
+        "Branch audit is due on 31 March." in fake.requests[0]["messages"][1]["content"]
+    )
 
 
 def test_extract_data_file_and_summarize(env):

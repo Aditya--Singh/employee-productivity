@@ -1,23 +1,26 @@
-"""HTTP routes for the Document Assistant tab (phases 2-3: upload, Summarize, Rewrite,
-Proofread and downloads)."""
+"""HTTP routes for the Document Assistant tab (phases 2-4: upload, Summarize, Rewrite,
+Proofread, downloads and Ask about data)."""
 
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.languagetool import LanguageToolClient
 from app.core.ollama import OllamaClient, OllamaContextError, OllamaError
 from app.core.uploads import SUPPORTED_TYPES, ValidatedFile, validate_upload
 
 from . import segments as seg
+from .data_cells import Cell, TextCells, edited_sheet_csv, text_cells, write_back
+from .data_chat import ask
 from .docx_writer import apply_span_edits, new_docx, replace_paragraphs
-from .extraction import Extracted, ExtractionError, extract, sheet_preview
+from .extraction import DATA_TYPES, Extracted, ExtractionError, extract, sheet_preview
 from .file_store import FileExpired, FileStore, StoredFile, get_store
 from .proofread import ProofreadUnavailable, apply_to_text, proofread_document
 from .rewrite import DocumentTooLong, rewrite_document, same_words
@@ -29,6 +32,7 @@ from .summarize import (
     summarize_data,
     summarize_text,
 )
+from .xlsx_writer import CellNotEditable, has_drawings
 
 router = APIRouter(prefix="/api/document-assistant", tags=["document-assistant"])
 log = logging.getLogger(__name__)
@@ -42,10 +46,18 @@ PROOFREAD_UNAVAILABLE = (
     "Proofreading is not available right now: neither LanguageTool nor the language "
     "model could be reached. Please check that both are running and try again."
 )
-DATA_NOT_YET = (
-    "Proofread and Rewrite work on documents and text. Data files are not supported "
-    "here yet."
+REWRITE_DATA = (
+    "Rewrite works on documents and text. For data files, use Proofread, Summarize or "
+    "Ask about data."
 )
+NO_TEXT_CELLS = (
+    "This file has no text columns to check. Numbers, amounts, dates and codes are not "
+    "proofread."
+)
+NOT_DATA = "Ask about data works with Excel, CSV and JSON files."
+MAX_QUESTION_CHARS = 2_000
+# Cell values are short, so the LLM checks more of them per request than paragraphs.
+DATA_SECTION_CELLS = 25
 
 DOCX_SPAN_WARNINGS = [
     (
@@ -66,6 +78,19 @@ DOCX_REWRITE_WARNINGS = [
         "(salutation, closing, reference, address, subject, signature) were not rewritten."
     ),
 ]
+DATA_WARNINGS = {
+    ".xlsx": [
+        "Each corrected cell takes a single style: mixed formatting inside it is lost.",
+        "Formula cells, numbers, dates and codes were not checked or changed.",
+    ],
+    ".csv": [],
+    ".json": ["Values and key order are kept; indentation is changed to 2 spaces."],
+}
+XLSX_DRAWINGS_WARNING = (
+    "This workbook has charts, images or shapes. They are removed when the corrected "
+    "workbook is saved. To keep them, download the CSV of the edited sheet instead and "
+    "copy the corrections into your original file."
+)
 NEW_DOCX_WARNINGS = [
     (
         "This is a new, plain Word document. The original file's layout and formatting "
@@ -115,10 +140,15 @@ def _load(store: FileStore, file_id: str) -> Extracted:
 
 def _document(
     store: FileStore, text: str | None, file_id: str | None, mode: str
-) -> tuple[seg.SegmentedText, StoredFile | None]:
-    """The paragraphs to rewrite or proofread, from pasted text or an uploaded file."""
+) -> tuple[seg.SegmentedText, StoredFile | None, TextCells | None]:
+    """The paragraphs to rewrite or proofread, from pasted text or an uploaded file.
+
+    For a data file (Proofread only), the paragraphs are the distinct values of its text
+    columns, and the cells holding each value are returned too.
+    """
     if (text is None) == (file_id is None):
         raise HTTPException(status_code=400, detail="Send either text or a file id.")
+    cells = None
     if file_id is None:
         if not text.strip():
             raise HTTPException(status_code=400, detail="Please enter some text.")
@@ -127,8 +157,13 @@ def _document(
         stored = _get(store, file_id)
         extracted = _load(store, file_id)  # rejects tracked changes, scanned PDFs, ...
         if extracted.kind == "data":
-            raise HTTPException(status_code=422, detail=DATA_NOT_YET)
-        if stored.ext == ".docx":
+            if mode != "Proofread":
+                raise HTTPException(status_code=422, detail=REWRITE_DATA)
+            cells = text_cells(stored.ext, stored.read_bytes())
+            if not cells.doc.segments:
+                raise HTTPException(status_code=422, detail=NO_TEXT_CELLS)
+            doc = cells.doc
+        elif stored.ext == ".docx":
             doc = seg.from_docx(stored.read_bytes())
         else:
             doc = seg.from_text(extracted.text)
@@ -136,7 +171,7 @@ def _document(
         check_edit_length(doc.text, mode)
     except DocumentTooLong as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from None
-    return doc, stored
+    return doc, stored, cells
 
 
 def _derived_name(stored: StoredFile | None, suffix: str, ext: str) -> str:
@@ -254,7 +289,7 @@ async def rewrite(
     store: FileStore = Depends(get_store),
     client: OllamaClient = Depends(get_ollama),
 ) -> StreamingResponse:
-    doc, _ = _document(store, req.text, req.file_id, "Rewrite")
+    doc, _, _ = _document(store, req.text, req.file_id, "Rewrite")
     return _sse_stream(rewrite_document(doc, req.style, client))
 
 
@@ -270,8 +305,23 @@ async def proofread(
     client: OllamaClient = Depends(get_ollama),
     lt: LanguageToolClient = Depends(get_languagetool),
 ) -> StreamingResponse:
-    doc, _ = _document(store, req.text, req.file_id, "Proofread")
-    return _sse_stream(proofread_document(doc, client, lt))
+    doc, _, cells = _document(store, req.text, req.file_id, "Proofread")
+    if cells is None:
+        return _sse_stream(proofread_document(doc, client, lt))
+    events = proofread_document(doc, client, lt, max_paragraphs=DATA_SECTION_CELLS)
+    notice = (
+        f"Only text columns were checked ({', '.join(cells.columns)}). Each distinct "
+        "value is shown once; an accepted fix is applied to every cell in its column "
+        "with that value."
+    )
+    return _sse_stream(_with_notice(events, notice))
+
+
+async def _with_notice(events: AsyncIterator[dict], notice: str) -> AsyncIterator[dict]:
+    async for event in events:
+        if event["type"] == "result":
+            event = {**event, "notices": [notice, *event["notices"]]}
+        yield event
 
 
 class AcceptedEdit(BaseModel):
@@ -290,7 +340,7 @@ class ApplyRequest(BaseModel):
 async def proofread_apply(
     req: ApplyRequest, store: FileStore = Depends(get_store)
 ) -> dict:
-    doc, stored = _document(store, req.text, req.file_id, "Proofread")
+    doc, stored, cells = _document(store, req.text, req.file_id, "Proofread")
     edits = [(e.start, e.end, e.replacement) for e in req.accepted]
     if stored is not None:
         # Edits inside links or fields, or across paragraphs, cannot go back into a file.
@@ -315,7 +365,58 @@ async def proofread_apply(
                 f"{skipped} correction(s) could not be applied to the file."
             )
         body.update(file_id=out.id, filename=out.filename, warnings=warnings)
+    elif cells is not None:
+        body.update(_apply_to_data(store, stored, doc, cells, edits))
     return body
+
+
+def _apply_to_data(
+    store: FileStore,
+    stored: StoredFile,
+    doc: seg.SegmentedText,
+    cells: TextCells,
+    edits: list[tuple[int, int, str]],
+) -> dict[str, Any]:
+    """Write accepted fixes into every cell holding each corrected value."""
+    by_segment: dict[int, list[tuple[int, int, str]]] = {}
+    for start, end, replacement in edits:
+        index, s, e = doc.locate(start, end)
+        by_segment.setdefault(index, []).append((s, e, replacement))
+    changes: dict[Cell, str] = {}
+    for index, local in by_segment.items():
+        value = apply_to_text(doc.segments[index].text, local)
+        for cell in cells.cells[index]:
+            changes[cell] = value
+
+    original = stored.read_bytes()
+    try:
+        content = write_back(stored.ext, original, changes)
+    except CellNotEditable as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    out = store.save(_derived_name(stored, "proofread", stored.ext), content)
+    warnings = list(DATA_WARNINGS[stored.ext])
+    alternatives = []
+    if stored.ext == ".xlsx" and has_drawings(original):
+        warnings.insert(0, XLSX_DRAWINGS_WARNING)
+        for sheet in sorted({c.sheet for c in changes}):
+            safe = re.sub(r"[^\w\- ]+", "_", sheet).strip() or "sheet"
+            alt = store.save(
+                _derived_name(stored, f"{safe}-proofread", ".csv"),
+                edited_sheet_csv(original, sheet, changes),
+            )
+            alternatives.append(
+                {
+                    "file_id": alt.id,
+                    "filename": alt.filename,
+                    "label": f"CSV of {sheet}",
+                }
+            )
+    return {
+        "file_id": out.id,
+        "filename": out.filename,
+        "warnings": warnings,
+        "alternatives": alternatives,
+    }
 
 
 class ExportRequest(BaseModel):
@@ -377,6 +478,42 @@ async def export(req: ExportRequest, store: FileStore = Depends(get_store)) -> d
 
     out = store.save(name, data)
     return {"file_id": out.id, "filename": out.filename, "warnings": warnings}
+
+
+class ChatTurn(BaseModel):
+    question: str
+    operation: dict[str, Any] | None = None
+    answer: str | None = None
+
+
+class AskRequest(BaseModel):
+    file_id: str
+    question: str
+    history: list[ChatTurn] = Field(default_factory=list)
+
+
+@router.post("/data/ask")
+async def data_ask(
+    req: AskRequest,
+    store: FileStore = Depends(get_store),
+    client: OllamaClient = Depends(get_ollama),
+) -> StreamingResponse:
+    """One chat turn about a data file. The browser keeps the conversation and sends the
+    earlier turns each time; the server keeps no chat state."""
+    question = req.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Please type a question.")
+    if len(question) > MAX_QUESTION_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Please keep the question under {MAX_QUESTION_CHARS:,} characters.",
+        )
+    stored = _get(store, req.file_id)
+    if stored.ext not in DATA_TYPES:
+        raise HTTPException(status_code=422, detail=NOT_DATA)
+    extracted = _load(store, req.file_id)
+    history = [t.model_dump() for t in req.history]
+    return _sse_stream(ask(extracted.sheets, question, history, client))
 
 
 @router.get("/download/{file_id}")

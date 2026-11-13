@@ -5,7 +5,7 @@ export const MODES: { id: Mode; label: string; ready: boolean }[] = [
   { id: "rewrite", label: "Rewrite", ready: true },
   { id: "summarize", label: "Summarize", ready: true },
   { id: "draft", label: "Draft", ready: false },
-  { id: "data", label: "Ask about data", ready: false },
+  { id: "data", label: "Ask about data", ready: true },
 ];
 
 type Props = { active: Mode; onSelect: (mode: Mode) => void; disabled?: boolean };

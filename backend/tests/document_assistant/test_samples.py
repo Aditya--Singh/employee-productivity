@@ -6,7 +6,11 @@ import pandas as pd
 import pytest
 
 from app.core.uploads import ValidatedFile
-from app.tabs.document_assistant.data_stats import format_indian, format_stats, sheet_stats
+from app.tabs.document_assistant.data_stats import (
+    format_indian,
+    format_stats,
+    sheet_stats,
+)
 from app.tabs.document_assistant.extraction import extract
 
 SAMPLES = Path(__file__).resolve().parents[3] / "samples"
@@ -66,5 +70,7 @@ def test_identifiers_never_summed(filename, column):
     assert c.kind == "identifier"
     assert c.total is None and c.mean is None
     assert c.minimum is None and c.maximum is None
-    line = next(l for l in format_stats(sheets).splitlines() if l.startswith(f"- {column} ("))
+    line = next(
+        l for l in format_stats(sheets).splitlines() if l.startswith(f"- {column} (")
+    )
     assert "total" not in line and "average" not in line

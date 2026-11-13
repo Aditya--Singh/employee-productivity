@@ -37,7 +37,10 @@ def test_docx_paragraphs_and_table_in_order():
         table=[["Item", "Amount"], ["Loan", "5,00,000"]],
     )
     r = extract(vf(".docx", content))
-    assert r.text == "Dear Customer,\n\nYour loan is sanctioned.\n\nItem | Amount\n\nLoan | 5,00,000"
+    assert (
+        r.text
+        == "Dear Customer,\n\nYour loan is sanctioned.\n\nItem | Amount\n\nLoan | 5,00,000"
+    )
 
 
 def test_docx_tracked_changes_rejected():
@@ -118,7 +121,9 @@ def test_json_records_and_wrapper_and_columns():
         assert r.row_count == 2
 
 
-@pytest.mark.parametrize("data", [{"a": 1}, [1, 2, 3], "text", [], {"a": [1], "b": [1, 2]}])
+@pytest.mark.parametrize(
+    "data", [{"a": 1}, [1, 2, 3], "text", [], {"a": [1], "b": [1, 2]}]
+)
 def test_json_not_a_table_rejected(data):
     with pytest.raises(ExtractionError) as err:
         extract(vf(".json", json.dumps(data).encode()))
